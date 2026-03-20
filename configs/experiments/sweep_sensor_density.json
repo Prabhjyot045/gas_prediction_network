@@ -1,0 +1,13 @@
+{
+  "name": "sensor_density_sweep",
+  "base_environment": "configs/environments/default_maze.json",
+  "parameters": {
+    "sensors.spacing": [2, 3, 4, 5, 6],
+    "sensors.communication_radius": [3.0, 5.0, 7.0]
+  },
+  "simulation": {
+    "n_steps": 300,
+    "metrics_every": 30
+  },
+  "output_dir": "results/sensor_density_sweep"
+}

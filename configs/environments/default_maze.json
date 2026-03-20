@@ -1,0 +1,83 @@
+{
+  "grid": {
+    "nx": 20,
+    "ny": 20,
+    "nz": 5,
+    "dx": 1.0
+  },
+
+  "physics": {
+    "diffusion_coefficient": 0.05,
+    "dt": null,
+    "safety_factor": 0.4
+  },
+
+  "rooms": [
+    {
+      "name": "main_hallway_horizontal",
+      "bounds": { "x_min": 1, "x_max": 19, "y_min": 9, "y_max": 12, "z_min": 0, "z_max": 5 }
+    },
+    {
+      "name": "main_hallway_vertical",
+      "bounds": { "x_min": 9, "x_max": 12, "y_min": 1, "y_max": 19, "z_min": 0, "z_max": 5 }
+    },
+    {
+      "name": "room_A",
+      "bounds": { "x_min": 1, "x_max": 8, "y_min": 1, "y_max": 8, "z_min": 0, "z_max": 5 },
+      "description": "Bottom-left room — gas leak source"
+    },
+    {
+      "name": "room_B",
+      "bounds": { "x_min": 13, "x_max": 19, "y_min": 1, "y_max": 8, "z_min": 0, "z_max": 5 },
+      "description": "Bottom-right room"
+    },
+    {
+      "name": "room_C",
+      "bounds": { "x_min": 13, "x_max": 19, "y_min": 13, "y_max": 19, "z_min": 0, "z_max": 5 },
+      "description": "Top-right room"
+    }
+  ],
+
+  "doors": [
+    {
+      "name": "door_A_to_hallway",
+      "bounds": { "x_min": 8, "x_max": 9, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 4 },
+      "state": "open",
+      "description": "Connects room A to vertical hallway"
+    },
+    {
+      "name": "door_B_to_hallway",
+      "bounds": { "x_min": 12, "x_max": 13, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 4 },
+      "state": "open",
+      "description": "Connects room B to vertical hallway"
+    },
+    {
+      "name": "door_C_to_hallway",
+      "bounds": { "x_min": 12, "x_max": 13, "y_min": 15, "y_max": 17, "z_min": 0, "z_max": 4 },
+      "state": "open",
+      "description": "Connects room C to horizontal hallway"
+    }
+  ],
+
+  "sources": [
+    {
+      "name": "gas_leak",
+      "position": { "x": 4, "y": 4, "z": 2 },
+      "rate": 5.0,
+      "start_time": 0,
+      "end_time": null
+    }
+  ],
+
+  "sensors": {
+    "placement": "grid",
+    "spacing": 3,
+    "z_levels": [2],
+    "communication_radius": 5.0
+  },
+
+  "noise": {
+    "sensor_sigma": 0.05,
+    "source_rate_sigma": 0.0
+  }
+}
