@@ -1,5 +1,5 @@
 {
-    "environment": "configs/environments/hvac_office.json",
+    "environment": "configs/environments/university_floor.json",
     "n_steps": 500,
     "record_every": 10,
     "gossip_rounds": 2,

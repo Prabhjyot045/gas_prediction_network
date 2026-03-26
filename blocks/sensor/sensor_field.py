@@ -1,11 +1,15 @@
 """
-SensorField — manages all sensor nodes and coordinates gossip rounds.
+SensorField — collection of sensor nodes with gossip-based distributed consensus.
 
-SensorField is the high-level interface for Block 4. It:
-1. Creates SensorNode instances from the SensorNetwork topology
-2. Runs the sense -> buffer -> gradient -> gossip cycle each step
-3. Supports multi-hop gossip propagation (configurable rounds per step)
-4. Exposes aggregate metrics for reporting
+Orchestrates the three-layer pipeline across all nodes each timestep:
+
+  sense (rate-of-change monitoring)
+    -> predict (TTI + urgency computation)
+    -> gossip (multi-hop urgency propagation for neighborhood consensus)
+
+The gossip protocol is bandwidth-efficient: nodes only transmit when they
+detect a meaningful rate of change (|dT/dt| > talk_threshold). This makes
+the network self-regulating — quiet rooms stay quiet on the network.
 """
 
 from __future__ import annotations

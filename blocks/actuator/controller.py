@@ -1,13 +1,19 @@
 """
 DamperController — VAV damper actuation with edge and centralized policies.
 
-Two policies:
+The core argument for edge over centralized is **network latency**:
+
 - **edge** (Aether-Edge): Each damper opening is computed locally from
   gossip-propagated urgencies. Proportional allocation: A_i = u_i / sum(u).
-  Zero network delay for local decisions.
+  Age of Information = 0 — decisions use real-time local data.
+
 - **centralized**: A central controller polls all sensors, computes allocation,
-  and pushes commands back. Simulated polling interval, jitter, and compute
-  delay cause stale data (Age of Information).
+  and pushes commands back. Same allocation algorithm, but data is stale by
+  polling_interval + jitter + compute_delay (Age of Information > 0).
+
+Both policies use the same proportional allocation formula. The only difference
+is data freshness — which is the entire point. Edge wins because it acts on
+current data; centralized loses because it acts on old data.
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ class DamperController:
         self.jitter_sigma = jitter_sigma
         self.compute_delay = compute_delay
         self._rng = np.random.default_rng(seed)
-        self._last_poll_time: float = -float("inf")
+        self._last_poll_time: float = 0.0
         self._cached_openings: dict[str, float] = {}
 
         # Map dampers → nearby sensor names

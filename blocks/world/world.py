@@ -121,8 +121,10 @@ class World:
             if self.env.walls[pos]:
                 continue
             flow = damper.current_flow * scale
-            # Cool toward supply temperature
+            # Cool toward supply temperature (clamped to prevent overshoot)
             delta = flow * (self.T[pos] - T_supply) * self.env.dt
+            max_delta = max(0.0, self.T[pos] - T_supply)
+            delta = min(delta, max_delta)
             self.T[pos] -= delta
 
     def _enforce_walls(self) -> None:

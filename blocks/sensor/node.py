@@ -1,14 +1,23 @@
 """
 SensorNode — individual edge inference node with rolling buffer and TTI.
 
-Each sensor node:
-1. Reads temperature from the world at its grid position
-2. Applies Gaussian noise to simulate imperfect sensing
-3. Maintains a 30-second rolling buffer for local trend analysis
-4. Computes dT/dt via least-squares fit on the buffer
-5. Computes Time-To-Impact (TTI): time until setpoint breach
-6. Computes spatial gradient for flow direction inference
-7. Generates and processes negotiation messages for distributed consensus
+The node architecture separates three layers:
+
+  Layer 1 (Sensing): Domain-agnostic rate-of-change monitoring.
+    - Rolling buffer of readings with least-squares slope estimation (dT/dt).
+    - This layer generalizes to any time-series metric (temperature, CO2,
+      humidity, occupancy, power draw, etc.).
+
+  Layer 2 (Prediction): Time-To-Impact estimation.
+    - TTI = (threshold - current) / (rate of change)
+    - Converts raw trends into actionable "urgency" scores (urgency = 1/TTI).
+
+  Layer 3 (Communication): Gossip-based consensus.
+    - Urgency propagates to neighbors via NegotiationMessages.
+    - Bandwidth-efficient: only gossip when |dT/dt| > talk_threshold.
+
+Applied here to HVAC temperature monitoring, but the architecture is
+general-purpose for any threshold-breach prediction problem.
 """
 
 from __future__ import annotations
