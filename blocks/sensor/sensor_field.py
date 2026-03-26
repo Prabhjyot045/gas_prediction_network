@@ -3,7 +3,7 @@ SensorField — manages all sensor nodes and coordinates gossip rounds.
 
 SensorField is the high-level interface for Block 4. It:
 1. Creates SensorNode instances from the SensorNetwork topology
-2. Runs the sense → filter → gossip cycle each simulation step
+2. Runs the sense -> buffer -> gradient -> gossip cycle each step
 3. Supports multi-hop gossip propagation (configurable rounds per step)
 4. Exposes aggregate metrics for reporting
 """
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .node import SensorNode
-from .gossip import GossipMessage
+from .gossip import NegotiationMessage
 
 if TYPE_CHECKING:
     from blocks.world.environment import Environment
@@ -24,37 +24,41 @@ if TYPE_CHECKING:
 
 
 class SensorField:
-    """Collection of sensor nodes with gossip-based distributed prediction."""
+    """Collection of sensor nodes with gossip-based distributed consensus."""
 
     def __init__(
         self,
         env: Environment,
         network: SensorNetwork,
         gossip_rounds: int = 1,
-        detection_threshold: float = 0.01,
+        talk_threshold: float = 0.01,
         max_hops: int = 10,
-        process_noise_var: float = 0.01,
+        buffer_seconds: float = 30.0,
         seed: int | None = None,
     ):
         self.env = env
         self.network = network
         self.gossip_rounds = gossip_rounds
-        self.detection_threshold = detection_threshold
+        self.talk_threshold = talk_threshold
         self.max_hops = max_hops
 
         # Create reproducible RNGs for each node
         master_seq = np.random.SeedSequence(seed)
         child_seeds = master_seq.spawn(len(network.positions))
 
+        # Determine per-node setpoint from zone mask
         self.nodes: dict[str, SensorNode] = {}
         for i, (name, pos) in enumerate(network.positions.items()):
+            zone_name = str(env.zone_mask[pos])
+            setpoint = env.rooms[zone_name].setpoint if zone_name in env.rooms else 25.0
             self.nodes[name] = SensorNode(
                 name=name,
                 position=pos,
                 dx=env.dx,
                 dt=env.dt,
+                setpoint=setpoint,
+                buffer_seconds=buffer_seconds,
                 sensor_sigma=env.sensor_sigma,
-                process_noise_var=process_noise_var,
                 rng=np.random.default_rng(child_seeds[i]),
             )
 
@@ -63,8 +67,8 @@ class SensorField:
     # ── Main loop ──────────────────────────────────────────────────────
 
     def step(self, world: World) -> None:
-        """Run one full sense → filter → gradient → gossip cycle."""
-        phi = world.phi
+        """Run one full sense -> buffer -> gradient -> gossip cycle."""
+        T = world.T
         walls = self.env.walls
         timestamp = world.time
 
@@ -72,14 +76,13 @@ class SensorField:
         for node in self.nodes.values():
             node.clear_inbox()
 
-        # 1. Sense: all nodes read concentration + Kalman update
+        # 1. Sense: all nodes read temperature + buffer update
         for node in self.nodes.values():
-            node.sense(phi)
+            node.sense(T, timestamp)
 
-        # 2. Compute gradients and velocities
+        # 2. Compute spatial gradients
         for node in self.nodes.values():
-            node.compute_gradient(phi, walls)
-            node.compute_velocity()
+            node.compute_gradient(T, walls)
 
         # 3. Gossip propagation
         self._run_gossip(timestamp)
@@ -89,34 +92,32 @@ class SensorField:
     def _run_gossip(self, timestamp: float) -> None:
         """Execute gossip propagation with configurable hop rounds.
 
-        Round 0: detecting nodes generate messages → deliver to 1-hop neighbors.
+        Round 0: nodes with |dT/dt| > talk_threshold generate messages.
         Round 1+: forwarded messages propagate one additional hop each round.
         """
-        # Generate initial messages from all detecting nodes
-        pending: dict[str, list[GossipMessage]] = {}
+        pending: dict[str, list[NegotiationMessage]] = {}
 
         for name, node in self.nodes.items():
-            msg = node.create_gossip_message(
+            msg = node.create_negotiation_message(
                 timestamp=timestamp,
-                detection_threshold=self.detection_threshold,
+                talk_threshold=self.talk_threshold,
             )
             if msg is not None:
                 for neighbor in self.network.neighbors(name):
                     pending.setdefault(neighbor, []).append(msg)
 
-        # Run gossip rounds
         for _ in range(self.gossip_rounds):
             if not pending:
                 break
 
-            next_pending: dict[str, list[GossipMessage]] = {}
+            next_pending: dict[str, list[NegotiationMessage]] = {}
 
             for recipient, messages in pending.items():
                 node = self.nodes[recipient]
                 for msg in messages:
                     if msg.hops >= self.max_hops:
                         continue
-                    forwarded = node.receive_gossip(msg)
+                    forwarded = node.receive_negotiation(msg)
                     if forwarded is not None:
                         for neighbor in self.network.neighbors(recipient):
                             if neighbor != msg.sender_node:
@@ -126,31 +127,27 @@ class SensorField:
 
     # ── Query helpers ──────────────────────────────────────────────────
 
-    def get_predicted_arrivals(self) -> dict[str, float]:
-        """Return {node_name: earliest_predicted_arrival} for all nodes."""
-        return {
-            name: node.earliest_predicted_arrival
-            for name, node in self.nodes.items()
-        }
+    def get_urgencies(self) -> dict[str, float]:
+        """Return {node_name: urgency} for all nodes."""
+        return {name: node.urgency for name, node in self.nodes.items()}
 
-    def get_alert_nodes(self, current_time: float, horizon: float) -> list[str]:
-        """Return names of nodes predicting gas arrival within `horizon` seconds.
+    def get_ttis(self) -> dict[str, float]:
+        """Return {node_name: TTI} for all nodes."""
+        return {name: node.tti for name, node in self.nodes.items()}
 
-        These are the nodes that would trigger actuators in Block 5.
-        """
-        alerts = []
-        for name, node in self.nodes.items():
-            arrival = node.earliest_predicted_arrival
-            if arrival < current_time + horizon:
-                alerts.append(name)
-        return alerts
+    def get_alert_nodes(self, horizon: float = 30.0) -> list[str]:
+        """Return names of nodes predicting setpoint breach within horizon seconds."""
+        return [
+            name for name, node in self.nodes.items()
+            if node.tti < horizon
+        ]
 
-    def concentration_rmse(self, world: World) -> float:
-        """RMSE between Kalman-filtered estimates and true concentration."""
+    def temperature_rmse(self, world: World) -> float:
+        """RMSE between noisy readings and true temperature."""
         errors_sq = []
         for node in self.nodes.values():
-            true_val = float(world.phi[node.position])
-            est_val = node.filtered_concentration
+            true_val = float(world.T[node.position])
+            est_val = node.filtered_temperature
             errors_sq.append((true_val - est_val) ** 2)
 
         if not errors_sq:
@@ -161,19 +158,18 @@ class SensorField:
 
     def metrics(self, world: World | None = None) -> dict[str, Any]:
         """Return aggregate metrics for reporting."""
-        n_detecting = sum(
+        n_heating = sum(
             1 for n in self.nodes.values()
-            if n.filtered_concentration >= self.detection_threshold
+            if n.dT_dt > self.talk_threshold
         )
-        n_with_predictions = sum(
+        n_with_urgency = sum(
             1 for n in self.nodes.values()
-            if n.predictions
+            if n.urgency > 0
         )
 
-        finite_arrivals = [
-            n.earliest_predicted_arrival
-            for n in self.nodes.values()
-            if n.earliest_predicted_arrival < float("inf")
+        finite_ttis = [
+            n.tti for n in self.nodes.values()
+            if n.tti < float("inf")
         ]
 
         total_sent = sum(n.messages_sent for n in self.nodes.values())
@@ -182,26 +178,26 @@ class SensorField:
         result: dict[str, Any] = {
             "step": self._step_count,
             "n_nodes": len(self.nodes),
-            "n_detecting": n_detecting,
-            "n_with_predictions": n_with_predictions,
-            "prediction_coverage": round(
-                n_with_predictions / len(self.nodes), 4
+            "n_heating": n_heating,
+            "n_with_urgency": n_with_urgency,
+            "urgency_coverage": round(
+                n_with_urgency / len(self.nodes), 4
             ) if self.nodes else 0.0,
             "total_messages_sent": total_sent,
             "total_messages_received": total_received,
-            "mean_filtered_concentration": round(float(np.mean([
-                n.filtered_concentration for n in self.nodes.values()
-            ])), 6) if self.nodes else 0.0,
-            "mean_velocity_magnitude": round(float(np.mean([
-                np.linalg.norm(n.velocity) for n in self.nodes.values()
+            "mean_temperature": round(float(np.mean([
+                n.filtered_temperature for n in self.nodes.values()
+            ])), 4) if self.nodes else 0.0,
+            "mean_dT_dt": round(float(np.mean([
+                n.dT_dt for n in self.nodes.values()
             ])), 6) if self.nodes else 0.0,
         }
 
-        if finite_arrivals:
-            result["earliest_global_arrival"] = round(min(finite_arrivals), 6)
-            result["mean_predicted_arrival"] = round(float(np.mean(finite_arrivals)), 6)
+        if finite_ttis:
+            result["min_tti"] = round(min(finite_ttis), 4)
+            result["mean_tti"] = round(float(np.mean(finite_ttis)), 4)
 
         if world is not None:
-            result["concentration_rmse"] = round(self.concentration_rmse(world), 6)
+            result["temperature_rmse"] = round(self.temperature_rmse(world), 6)
 
         return result

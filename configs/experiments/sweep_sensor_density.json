@@ -1,6 +1,6 @@
 {
   "name": "sensor_density_sweep",
-  "base_environment": "configs/environments/default_maze.json",
+  "base_environment": "configs/environments/hvac_office.json",
   "parameters": {
     "sensors.spacing": [2, 3, 4, 5, 6],
     "sensors.communication_radius": [3.0, 5.0, 7.0]

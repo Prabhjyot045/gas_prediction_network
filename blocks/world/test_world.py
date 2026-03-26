@@ -1,342 +1,303 @@
-"""
-Unit tests for Block 1 — World (3D FTCS Diffusion).
-
-Run with:
-    python -m pytest blocks/world/test_world.py -v
-"""
-
-from __future__ import annotations
+"""Unit tests for the HVAC world: stability, environment, and thermal physics."""
 
 import json
 import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-from blocks.world.stability import compute_max_dt, compute_stable_dt, validate_dt, fourier_number
+from blocks.world.stability import (
+    compute_max_dt_diffusion,
+    compute_max_dt_advection,
+    compute_stable_dt,
+    validate_dt,
+    fourier_number,
+)
 from blocks.world.environment import Environment
 from blocks.world.world import World
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-def _write_config(config: dict) -> Path:
-    """Write a config dict to a temp JSON file and return the path."""
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(config, f)
-    f.close()
-    return Path(f.name)
-
-
-def _minimal_config(**overrides) -> dict:
-    """A minimal valid config: 10x10x3 box, one room filling most of it."""
+def _make_config(**overrides) -> dict:
+    """Minimal HVAC config for testing."""
     cfg = {
-        "grid": {"nx": 10, "ny": 10, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05, "dt": None, "safety_factor": 0.4},
+        "grid": {"nx": 12, "ny": 12, "nz": 3, "dx": 1.0},
+        "physics": {
+            "thermal_diffusivity": 0.02,
+            "dt": None,
+            "safety_factor": 0.4,
+            "ambient_temperature": 20.0,
+        },
         "rooms": [
-            {"name": "open_box", "bounds": {
-                "x_min": 1, "x_max": 9, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }}
+            {
+                "name": "room_A",
+                "bounds": {"x_min": 1, "x_max": 5, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3},
+                "setpoint": 22.0,
+            },
+            {
+                "name": "room_B",
+                "bounds": {"x_min": 7, "x_max": 11, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3},
+                "setpoint": 22.0,
+            },
         ],
-        "doors": [],
-        "sources": [],
-        "noise": {"sensor_sigma": 0.0, "source_rate_sigma": 0.0},
+        "hallways": [
+            {
+                "name": "corridor",
+                "bounds": {"x_min": 5, "x_max": 7, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3},
+            },
+        ],
+        "vav_dampers": [
+            {
+                "name": "vav_A",
+                "zone": "room_A",
+                "position": {"x": 3, "y": 3, "z": 1},
+                "max_flow": 1.0,
+                "initial_opening": 0.5,
+            },
+        ],
+        "heat_sources": [
+            {
+                "name": "heat_A",
+                "zone": "room_A",
+                "rate": 0.5,
+                "schedule": {"start": 0, "end": None},
+            },
+        ],
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
+        "sensors": {"placement": "grid", "spacing": 3, "z_levels": [1], "communication_radius": 5.0},
+        "noise": {"sensor_sigma": 0.0},
+        "network": {"polling_interval": 5.0, "jitter_sigma": 0.5, "compute_delay": 1.0},
     }
     cfg.update(overrides)
     return cfg
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Stability tests
-# ══════════════════════════════════════════════════════════════════════════
+def _write_config(cfg: dict) -> str:
+    """Write config to temp file, return path."""
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(cfg, f)
+    f.close()
+    return f.name
+
+
+def _make_env(**overrides) -> Environment:
+    return Environment(_write_config(_make_config(**overrides)))
+
+
+def _make_world(**overrides) -> tuple[Environment, World]:
+    env = _make_env(**overrides)
+    return env, World(env)
+
+
+# ── Stability Tests ──────────────────────────────────────────────────────
 
 class TestStability:
-    def test_max_dt_basic(self):
-        # dx=1, D=0.05 → dt_max = 1/(6*0.05) = 3.333...
-        assert abs(compute_max_dt(1.0, 0.05) - 10 / 3) < 1e-10
+    def test_max_dt_diffusion(self):
+        assert compute_max_dt_diffusion(1.0, 0.02) == pytest.approx(1.0 / (6 * 0.02))
 
-    def test_stable_dt_with_safety(self):
-        dt = compute_stable_dt(1.0, 0.05, safety_factor=0.5)
-        assert abs(dt - 0.5 * 10 / 3) < 1e-10
+    def test_max_dt_advection_zero(self):
+        assert compute_max_dt_advection(1.0, 0.0) == float("inf")
+
+    def test_max_dt_advection_positive(self):
+        assert compute_max_dt_advection(1.0, 2.0) == pytest.approx(0.5)
+
+    def test_stable_dt_uses_stricter(self):
+        dt = compute_stable_dt(1.0, 0.02, v_max=2.0, safety_factor=1.0)
+        assert dt == pytest.approx(0.5)
+
+    def test_stable_dt_safety_factor(self):
+        dt = compute_stable_dt(1.0, 0.02, safety_factor=0.4)
+        assert dt == pytest.approx(0.4 * 1.0 / (6 * 0.02))
 
     def test_validate_dt_passes(self):
-        validate_dt(1.0, 1.0, 0.05)  # 1.0 < 3.33
+        dt = compute_stable_dt(1.0, 0.02, safety_factor=0.4)
+        validate_dt(1.0, 0.02, dt)
 
-    def test_validate_dt_raises(self):
-        with pytest.raises(ValueError, match="exceeds"):
-            validate_dt(5.0, 1.0, 0.05)  # 5.0 > 3.33
+    def test_validate_dt_raises_diffusion(self):
+        with pytest.raises(ValueError, match="diffusion limit"):
+            validate_dt(1.0, 0.02, 100.0)
 
     def test_invalid_dx(self):
         with pytest.raises(ValueError):
-            compute_max_dt(0, 0.05)
+            compute_max_dt_diffusion(0, 0.02)
 
-    def test_invalid_D(self):
+    def test_invalid_alpha(self):
         with pytest.raises(ValueError):
-            compute_max_dt(1.0, -0.1)
+            compute_max_dt_diffusion(1.0, -0.02)
 
     def test_fourier_number(self):
-        fo = fourier_number(1.0, 1.0, 0.05)
-        assert abs(fo - 0.05) < 1e-10
+        fo = fourier_number(0.1, 1.0, 0.02)
+        assert fo == pytest.approx(0.002)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Environment tests
-# ══════════════════════════════════════════════════════════════════════════
+# ── Environment Tests ────────────────────────────────────────────────────
 
 class TestEnvironment:
     def test_grid_shape(self):
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        assert env.grid_shape == (10, 10, 3)
+        env = _make_env()
+        assert env.grid_shape == (12, 12, 3)
 
     def test_walls_carved(self):
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        # Inside room should be open
-        assert not env.walls[5, 5, 1]
-        # Outer boundary row x=0 should be wall
-        assert env.walls[0, 5, 1]
+        env = _make_env()
+        assert not env.walls[3, 3, 1]
+        assert env.walls[0, 0, 0]
+
+    def test_rooms_parsed(self):
+        env = _make_env()
+        assert "room_A" in env.rooms
+        assert "room_B" in env.rooms
+        assert env.rooms["room_A"].setpoint == 22.0
+
+    def test_hallway_carved(self):
+        env = _make_env()
+        assert not env.walls[6, 3, 1]
+
+    def test_zone_mask(self):
+        env = _make_env()
+        assert env.zone_mask[3, 3, 1] == "room_A"
+        assert env.zone_mask[9, 3, 1] == "room_B"
+        assert env.zone_mask[6, 3, 1] == ""
 
     def test_auto_dt(self):
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        expected = 0.4 * (1.0**2 / (6 * 0.05))
-        assert abs(env.dt - expected) < 1e-10
+        env = _make_env()
+        expected = 0.4 * 1.0**2 / (6 * 0.02)
+        assert env.dt == pytest.approx(expected)
 
-    def test_door_initially_closed(self):
-        config = _minimal_config()
-        config["doors"] = [
-            {"name": "test_door", "bounds": {
-                "x_min": 4, "x_max": 6, "y_min": 0, "y_max": 1,
-                "z_min": 0, "z_max": 2
-            }, "state": "closed"}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        assert env.walls[5, 0, 1]  # Door region is wall
-        assert env.get_door_state("test_door") == "closed"
+    def test_dampers_parsed(self):
+        env = _make_env()
+        assert "vav_A" in env.dampers
+        assert env.dampers["vav_A"].opening == 0.5
+        assert env.dampers["vav_A"].max_flow == 1.0
 
-    def test_door_open_close(self):
-        config = _minimal_config()
-        config["doors"] = [
-            {"name": "d1", "bounds": {
-                "x_min": 4, "x_max": 6, "y_min": 0, "y_max": 1,
-                "z_min": 0, "z_max": 2
-            }, "state": "open"}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        assert not env.walls[5, 0, 1]  # Open
+    def test_heat_sources_parsed(self):
+        env = _make_env()
+        assert len(env.heat_sources) == 1
+        assert env.heat_sources[0].zone == "room_A"
 
-        env.close_door("d1")
-        assert env.walls[5, 0, 1]  # Now wall
+    def test_cooling_plant(self):
+        env = _make_env()
+        assert env.Q_total == 5.0
+        assert env.supply_temperature == 12.0
 
-        env.open_door("d1")
-        assert not env.walls[5, 0, 1]  # Open again
+    def test_damper_control(self):
+        env = _make_env()
+        env.set_damper_opening("vav_A", 0.8)
+        assert env.get_damper_opening("vav_A") == 0.8
 
-    def test_source_in_wall_raises(self):
-        config = _minimal_config()
-        config["sources"] = [
-            {"name": "bad", "position": {"x": 0, "y": 0, "z": 0}, "rate": 1.0}
-        ]
-        cfg = _write_config(config)
+    def test_damper_clamps(self):
+        env = _make_env()
+        env.set_damper_opening("vav_A", 1.5)
+        assert env.get_damper_opening("vav_A") == 1.0
+        env.set_damper_opening("vav_A", -0.5)
+        assert env.get_damper_opening("vav_A") == 0.0
+
+    def test_damper_in_wall_raises(self):
+        cfg = _make_config()
+        cfg["vav_dampers"][0]["position"] = {"x": 0, "y": 0, "z": 0}
         with pytest.raises(ValueError, match="inside a wall"):
-            Environment(cfg)
+            Environment(_write_config(cfg))
+
+    def test_damper_unknown_zone_raises(self):
+        cfg = _make_config()
+        cfg["vav_dampers"][0]["zone"] = "nonexistent"
+        with pytest.raises(ValueError, match="unknown zone"):
+            Environment(_write_config(cfg))
+
+    def test_heat_source_unknown_zone_raises(self):
+        cfg = _make_config()
+        cfg["heat_sources"][0]["zone"] = "nonexistent"
+        with pytest.raises(ValueError, match="unknown zone"):
+            Environment(_write_config(cfg))
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# World tests
-# ══════════════════════════════════════════════════════════════════════════
+# ── World Tests ──────────────────────────────────────────────────────────
 
 class TestWorld:
-    def test_initial_state(self):
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        world = World(env)
-        assert world.phi.shape == (10, 10, 3)
-        assert world.total_mass() == 0.0
+    def test_initial_temperature(self):
+        _, world = _make_world()
+        assert world.T[3, 3, 1] == pytest.approx(20.0)
 
-    def test_source_injection(self):
-        config = _minimal_config()
-        config["sources"] = [
-            {"name": "src", "position": {"x": 5, "y": 5, "z": 1}, "rate": 10.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
+    def test_heat_injection_raises_temperature(self):
+        _, world = _make_world()
+        initial_T = world.zone_mean_temperature("room_A")
         world.step()
-        # After one step, source cell should have rate * dt concentration
-        expected = 10.0 * env.dt
-        assert world.phi[5, 5, 1] > 0
-        # Allow tolerance for diffusion spreading within the same step
-        assert abs(world.phi[5, 5, 1] - expected) < expected * 0.5
+        after_T = world.zone_mean_temperature("room_A")
+        assert after_T > initial_T
 
-    def test_mass_increases_with_source(self):
-        config = _minimal_config()
-        config["sources"] = [
-            {"name": "src", "position": {"x": 5, "y": 5, "z": 1}, "rate": 5.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
+    def test_room_b_no_heat_source(self):
+        _, world = _make_world()
+        initial_T = world.zone_mean_temperature("room_B")
+        world.step()
+        after_T = world.zone_mean_temperature("room_B")
+        assert abs(after_T - initial_T) < 0.1
 
+    def test_cooling_reduces_temperature(self):
+        env, world = _make_world()
+        world.T[3, 3, 1] = 30.0
+        env.set_damper_opening("vav_A", 1.0)
+        T_before = world.T[3, 3, 1]
+        world.step()
+        T_after = world.T[3, 3, 1]
+        assert T_after < T_before
+
+    def test_walls_at_ambient(self):
+        env, world = _make_world()
+        world.step()
+        wall_T = world.T[env.walls]
+        assert np.all(wall_T == env.ambient_temperature)
+
+    def test_diffusion_spreads_heat(self):
+        _, world = _make_world()
+        world.T[3, 3, 1] = 50.0
+        neighbors_before = [world.T[4, 3, 1], world.T[2, 3, 1]]
+        world.step()
+        neighbors_after = [world.T[4, 3, 1], world.T[2, 3, 1]]
+        assert all(a > b for a, b in zip(neighbors_after, neighbors_before))
+
+    def test_zone_overshoot(self):
+        env, world = _make_world()
+        room = env.rooms["room_A"]
+        world.T[room.slices] = 25.0
+        overshoot = world.zone_overshoot("room_A")
+        assert overshoot == pytest.approx(3.0, abs=0.1)
+
+    def test_zone_overshoot_within_setpoint(self):
+        _, world = _make_world()
+        overshoot = world.zone_overshoot("room_A")
+        assert overshoot == 0.0
+
+    def test_metrics_dict(self):
+        _, world = _make_world()
+        world.step()
+        m = world.metrics()
+        assert "step" in m
+        assert "zone_temperatures" in m
+        assert "max_overshoot" in m
+        assert "cooling_energy_dt" in m
+
+    def test_set_damper(self):
+        _, world = _make_world()
+        world.set_damper("vav_A", 0.9)
+        assert world.env.get_damper_opening("vav_A") == 0.9
+
+    def test_q_total_budget_enforced(self):
+        env, world = _make_world()
+        env.dampers["vav_A"].max_flow = 100.0
+        env.set_damper_opening("vav_A", 1.0)
+        world.T[3, 3, 1] = 30.0
+        world.step()
+        assert world.T[3, 3, 1] < 30.0
+
+    def test_comfort_violation(self):
+        env, world = _make_world()
+        room = env.rooms["room_A"]
+        world.T[room.slices] = 25.0
+        cv = world.comfort_violation()
+        assert cv > 0
+
+    def test_run_multiple_steps(self):
+        _, world = _make_world()
         world.run(10)
-        assert world.total_mass() > 0
-
-    def test_diffusion_spreads(self):
-        """Gas at center should spread to neighbors after several steps."""
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        world = World(env)
-
-        # Manually inject a blob at center
-        world.phi[5, 5, 1] = 100.0
-
-        world.run(50)
-
-        # Neighbors should have received some concentration
-        assert world.phi[4, 5, 1] > 0
-        assert world.phi[6, 5, 1] > 0
-        assert world.phi[5, 4, 1] > 0
-        assert world.phi[5, 6, 1] > 0
-
-    def test_walls_block_diffusion(self):
-        """Walls should always have zero concentration."""
-        config = _minimal_config()
-        config["sources"] = [
-            {"name": "src", "position": {"x": 5, "y": 5, "z": 1}, "rate": 10.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
-        world.run(100)
-
-        # All wall cells should be zero
-        assert np.all(world.phi[env.walls] == 0.0)
-
-    def test_door_blocks_diffusion(self):
-        """Closing a door should prevent gas from spreading through it."""
-        config = _minimal_config()
-        # Two rooms connected by a door
-        config["rooms"] = [
-            {"name": "left", "bounds": {
-                "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }},
-            {"name": "right", "bounds": {
-                "x_min": 6, "x_max": 9, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }},
-        ]
-        config["doors"] = [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 6, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 3
-            }, "state": "open"}
-        ]
-        config["sources"] = [
-            {"name": "src", "position": {"x": 2, "y": 5, "z": 1}, "rate": 10.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
-        # Close the door immediately
-        world.close_door("mid_door")
-
-        world.run(200)
-
-        # Right room should have (near) zero concentration
-        right_max = np.max(world.phi[6:9, 1:9, :])
-        assert right_max < 1e-10, f"Gas leaked through closed door: max={right_max}"
-
-    def test_gas_flows_through_open_door(self):
-        """Gas should flow from one room through an open door into an adjacent room."""
-        config = _minimal_config()
-        config["rooms"] = [
-            {"name": "left", "bounds": {
-                "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }},
-            {"name": "right", "bounds": {
-                "x_min": 6, "x_max": 9, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }},
-        ]
-        config["doors"] = [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 6, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 3
-            }, "state": "open"}
-        ]
-        config["sources"] = [
-            {"name": "src", "position": {"x": 2, "y": 5, "z": 1}, "rate": 10.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
-        world.run(200)
-
-        # Right room should have received gas through the open door
-        right_max = np.max(world.phi[6:9, 1:9, :])
-        assert right_max > 0.1, f"Gas did not flow through open door: max={right_max}"
-
-    def test_contamination_integral(self):
-        """Contamination integral should accumulate over time."""
-        config = _minimal_config()
-        config["sources"] = [
-            {"name": "src", "position": {"x": 5, "y": 5, "z": 1}, "rate": 10.0}
-        ]
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
-        total_contam = 0.0
-        for _ in range(50):
-            world.step()
-            total_contam += world.contamination_integral(threshold=0.1)
-
-        assert total_contam > 0
-
-    def test_symmetry(self):
-        """A centered source in a symmetric box should diffuse symmetrically."""
-        config = {
-            "grid": {"nx": 11, "ny": 11, "nz": 3, "dx": 1.0},
-            "physics": {"diffusion_coefficient": 0.05},
-            "rooms": [
-                {"name": "box", "bounds": {
-                    "x_min": 1, "x_max": 10, "y_min": 1, "y_max": 10,
-                    "z_min": 0, "z_max": 3
-                }}
-            ],
-            "sources": [],
-            "doors": [],
-        }
-        cfg = _write_config(config)
-        env = Environment(cfg)
-        world = World(env)
-
-        # Place symmetric blob
-        world.phi[5, 5, 1] = 100.0
-
-        world.run(30)
-
-        # Check X-symmetry: phi[5+d, 5, 1] ≈ phi[5-d, 5, 1]
-        for d in range(1, 4):
-            assert abs(world.phi[5+d, 5, 1] - world.phi[5-d, 5, 1]) < 1e-10
-
-        # Check Y-symmetry
-        for d in range(1, 4):
-            assert abs(world.phi[5, 5+d, 1] - world.phi[5, 5-d, 1]) < 1e-10
-
-    def test_no_negative_concentration(self):
-        """Concentration should never go negative."""
-        cfg = _write_config(_minimal_config())
-        env = Environment(cfg)
-        world = World(env)
-        world.phi[5, 5, 1] = 1.0
-
-        world.run(100)
-        assert np.all(world.phi >= 0)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+        assert world.step_count == 10
+        assert world.time > 0

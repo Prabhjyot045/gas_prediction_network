@@ -32,14 +32,12 @@ def _box_config(**overrides) -> dict:
     """Simple open box 10x10x3 with grid sensors."""
     cfg = {
         "grid": {"nx": 10, "ny": 10, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
             {"name": "box", "bounds": {
                 "x_min": 1, "x_max": 9, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }}
+            }, "setpoint": 22.0}
         ],
-        "doors": [],
-        "sources": [],
         "sensors": {
             "placement": "grid",
             "spacing": 3,
@@ -73,7 +71,6 @@ class TestPlacement:
     def test_grid_spacing(self, box_env):
         positions = grid_placement(box_env, box_env.sensor_config)
         xs = sorted(set(p[0] for _, p in positions))
-        # Spacing should be 3
         for i in range(1, len(xs)):
             assert xs[i] - xs[i-1] == 3
 
@@ -149,7 +146,6 @@ class TestGraphConstruction:
             assert dist <= net.comm_radius * dx + 1e-10
 
     def test_no_edges_beyond_radius(self):
-        """With tiny radius, nodes should have no edges."""
         config = _box_config()
         config["sensors"]["communication_radius"] = 0.1
         env = Environment(_write_config(config))

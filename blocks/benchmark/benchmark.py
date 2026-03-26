@@ -1,11 +1,13 @@
 """
-Benchmark — VDPA (predictive) vs centralized (reactive) comparison.
+Benchmark — Aether-Edge (decentralized) vs Centralized comparison.
 
-Runs the same environment with both actuation policies and compares:
-- Time-integrated contamination volume (primary metric)
-- Response time (detection → actuation)
-- Peak concentration in protected rooms
-- Contaminated volume over time
+Runs the same HVAC environment with both actuation policies and compares:
+- Overshoot Error (max degrees above setpoint)
+- Settling Time (steps until zones within tolerance)
+- Comfort Violation (time-integrated overshoot)
+- Energy Usage (total cooling energy)
+- Packet Overhead (gossip messages sent)
+- Age of Information (staleness of sensor data)
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from blocks.metrics.collector import MetricsCollector
 
 
 class Benchmark:
-    """Runs VDPA vs centralized reactive comparison on the same environment."""
+    """Runs edge vs centralized comparison on the same HVAC environment."""
 
     def __init__(
         self,
@@ -27,14 +29,11 @@ class Benchmark:
         n_steps: int = 500,
         record_every: int = 10,
         *,
-        # VDPA predictive settings
-        predictive_horizon: float = 5.0,
-        gossip_rounds: int = 1,
-        proximity_radius: float = 3.0,
-        # Reactive settings
-        reactive_threshold: float = 0.5,
         # Shared
-        detection_threshold: float = 0.01,
+        gossip_rounds: int = 2,
+        proximity_radius: float = 5.0,
+        talk_threshold: float = 0.01,
+        buffer_seconds: float = 30.0,
         seed: int = 42,
         output_dir: str | Path | None = None,
     ):
@@ -42,56 +41,55 @@ class Benchmark:
         self.n_steps = n_steps
         self.record_every = record_every
 
-        self.predictive_horizon = predictive_horizon
         self.gossip_rounds = gossip_rounds
         self.proximity_radius = proximity_radius
-        self.reactive_threshold = reactive_threshold
-        self.detection_threshold = detection_threshold
+        self.talk_threshold = talk_threshold
+        self.buffer_seconds = buffer_seconds
         self.seed = seed
         self.output_dir = Path(output_dir) if output_dir else None
 
-        self.predictive_result: MetricsCollector | None = None
-        self.reactive_result: MetricsCollector | None = None
+        self.edge_result: MetricsCollector | None = None
+        self.centralized_result: MetricsCollector | None = None
 
     # ── Run ────────────────────────────────────────────────────────────
 
-    def run_predictive(self) -> Simulation:
-        """Run simulation with VDPA predictive actuation."""
+    def run_edge(self) -> Simulation:
+        """Run simulation with Aether-Edge decentralized actuation."""
         sim = Simulation(
             self.env_config,
-            actuator_policy="predictive",
-            actuator_horizon=self.predictive_horizon,
+            actuator_policy="edge",
             gossip_rounds=self.gossip_rounds,
             proximity_radius=self.proximity_radius,
-            detection_threshold=self.detection_threshold,
+            talk_threshold=self.talk_threshold,
+            buffer_seconds=self.buffer_seconds,
             seed=self.seed,
-            name="vdpa_predictive",
+            name="aether_edge",
         )
         sim.run(self.n_steps, record_every=self.record_every)
-        self.predictive_result = sim.collector
+        self.edge_result = sim.collector
         return sim
 
-    def run_reactive(self) -> Simulation:
+    def run_centralized(self) -> Simulation:
         """Run simulation with centralized reactive actuation."""
         sim = Simulation(
             self.env_config,
-            actuator_policy="reactive",
-            concentration_threshold=self.reactive_threshold,
+            actuator_policy="centralized",
             proximity_radius=self.proximity_radius,
-            detection_threshold=self.detection_threshold,
+            talk_threshold=self.talk_threshold,
+            buffer_seconds=self.buffer_seconds,
             seed=self.seed,
-            name="centralized_reactive",
+            name="centralized",
         )
         sim.run(self.n_steps, record_every=self.record_every)
-        self.reactive_result = sim.collector
+        self.centralized_result = sim.collector
         return sim
 
     def run(self) -> dict[str, Any]:
         """Run both policies and return comparison results."""
-        pred_sim = self.run_predictive()
-        react_sim = self.run_reactive()
+        edge_sim = self.run_edge()
+        cent_sim = self.run_centralized()
 
-        comparison = self.compare(pred_sim, react_sim)
+        comparison = self.compare(edge_sim, cent_sim)
 
         if self.output_dir:
             self._save_results(comparison)
@@ -101,50 +99,57 @@ class Benchmark:
     # ── Compare ────────────────────────────────────────────────────────
 
     def compare(
-        self, pred_sim: Simulation, react_sim: Simulation
+        self, edge_sim: Simulation, cent_sim: Simulation
     ) -> dict[str, Any]:
         """Compare results from both simulation runs."""
-        pred_a = pred_sim.actuator
-        react_a = react_sim.actuator
+        edge_cv = edge_sim.cumulative_comfort_violation
+        cent_cv = cent_sim.cumulative_comfort_violation
 
-        pred_contam = pred_sim.cumulative_contamination
-        react_contam = react_sim.cumulative_contamination
+        comfort_improvement = (
+            (cent_cv - edge_cv) / cent_cv * 100
+            if cent_cv > 0 else 0.0
+        )
 
-        improvement = (
-            (react_contam - pred_contam) / react_contam * 100
-            if react_contam > 0 else 0.0
+        edge_energy = edge_sim.cumulative_energy
+        cent_energy = cent_sim.cumulative_energy
+
+        energy_savings = (
+            (cent_energy - edge_energy) / cent_energy * 100
+            if cent_energy > 0 else 0.0
         )
 
         return {
             "environment": self.env_config,
             "n_steps": self.n_steps,
-            "predictive": {
-                "cumulative_contamination": round(pred_contam, 4),
-                "response_time": pred_a.response_time,
-                "first_detection_time": pred_a.first_detection_time,
-                "first_actuation_time": pred_a.first_actuation_time,
-                "doors_closed": pred_a.doors_closed,
-                "total_mass_final": round(pred_sim.world.total_mass(), 4),
-                "peak_concentration": round(float(pred_sim.world.phi.max()), 4),
-                "contaminated_volume": pred_sim.world.contaminated_volume(),
+            "edge": {
+                "cumulative_comfort_violation": round(edge_cv, 4),
+                "cumulative_energy": round(edge_energy, 4),
+                "max_overshoot": round(edge_sim.world.max_overshoot(), 4),
+                "mean_aoi": round(edge_sim.actuator.mean_age_of_information, 4),
+                "total_messages": edge_sim.actuator.total_messages,
+                "zone_temperatures": {
+                    z: round(edge_sim.world.zone_mean_temperature(z), 4)
+                    for z in edge_sim.env.rooms
+                },
             },
-            "reactive": {
-                "cumulative_contamination": round(react_contam, 4),
-                "response_time": react_a.response_time,
-                "first_detection_time": react_a.first_detection_time,
-                "first_actuation_time": react_a.first_actuation_time,
-                "doors_closed": react_a.doors_closed,
-                "total_mass_final": round(react_sim.world.total_mass(), 4),
-                "peak_concentration": round(float(react_sim.world.phi.max()), 4),
-                "contaminated_volume": react_sim.world.contaminated_volume(),
+            "centralized": {
+                "cumulative_comfort_violation": round(cent_cv, 4),
+                "cumulative_energy": round(cent_energy, 4),
+                "max_overshoot": round(cent_sim.world.max_overshoot(), 4),
+                "mean_aoi": round(cent_sim.actuator.mean_age_of_information, 4),
+                "total_messages": cent_sim.actuator.total_messages,
+                "zone_temperatures": {
+                    z: round(cent_sim.world.zone_mean_temperature(z), 4)
+                    for z in cent_sim.env.rooms
+                },
             },
             "comparison": {
-                "contamination_reduction_pct": round(improvement, 2),
-                "predictive_faster_by": (
-                    round(react_a.response_time - pred_a.response_time, 6)
-                    if pred_a.response_time is not None and react_a.response_time is not None
-                    else None
-                ),
+                "comfort_improvement_pct": round(comfort_improvement, 2),
+                "energy_savings_pct": round(energy_savings, 2),
+                "edge_aoi": round(edge_sim.actuator.mean_age_of_information, 4),
+                "centralized_aoi": round(cent_sim.actuator.mean_age_of_information, 4),
+                "edge_messages": edge_sim.actuator.total_messages,
+                "centralized_messages": cent_sim.actuator.total_messages,
             },
         }
 
@@ -154,56 +159,30 @@ class Benchmark:
         """Save comparison and per-policy results to output_dir."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Comparison summary
         with open(self.output_dir / "comparison.json", "w") as f:
             json.dump(comparison, f, indent=2, default=str)
 
-        # Per-policy detailed results
-        if self.predictive_result:
-            self.predictive_result.save_json(
-                self.output_dir / "predictive_metrics.json"
-            )
-            self.predictive_result.save_csv(
-                self.output_dir / "predictive_scalars.csv"
-            )
-        if self.reactive_result:
-            self.reactive_result.save_json(
-                self.output_dir / "reactive_metrics.json"
-            )
-            self.reactive_result.save_csv(
-                self.output_dir / "reactive_scalars.csv"
-            )
+        if self.edge_result:
+            self.edge_result.save_json(self.output_dir / "edge_metrics.json")
+            self.edge_result.save_csv(self.output_dir / "edge_scalars.csv")
+        if self.centralized_result:
+            self.centralized_result.save_json(self.output_dir / "centralized_metrics.json")
+            self.centralized_result.save_csv(self.output_dir / "centralized_scalars.csv")
 
     @classmethod
     def from_config(cls, config_path: str | Path) -> Benchmark:
-        """Create a Benchmark from a JSON config file.
-
-        Config schema:
-        {
-            "environment": "path/to/env.json",
-            "n_steps": 500,
-            "record_every": 10,
-            "predictive": {"horizon": 5.0, "gossip_rounds": 1},
-            "reactive": {"threshold": 0.5},
-            "seed": 42,
-            "output_dir": "results/benchmark"
-        }
-        """
+        """Create a Benchmark from a JSON config file."""
         with open(config_path) as f:
             cfg = json.load(f)
-
-        pred = cfg.get("predictive", {})
-        react = cfg.get("reactive", {})
 
         return cls(
             env_config=cfg["environment"],
             n_steps=cfg.get("n_steps", 500),
             record_every=cfg.get("record_every", 10),
-            predictive_horizon=pred.get("horizon", 5.0),
-            gossip_rounds=pred.get("gossip_rounds", 1),
-            proximity_radius=cfg.get("proximity_radius", 3.0),
-            reactive_threshold=react.get("threshold", 0.5),
-            detection_threshold=cfg.get("detection_threshold", 0.01),
+            gossip_rounds=cfg.get("gossip_rounds", 2),
+            proximity_radius=cfg.get("proximity_radius", 5.0),
+            talk_threshold=cfg.get("talk_threshold", 0.01),
+            buffer_seconds=cfg.get("buffer_seconds", 30.0),
             seed=cfg.get("seed", 42),
             output_dir=cfg.get("output_dir"),
         )

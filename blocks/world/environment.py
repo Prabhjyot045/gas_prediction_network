@@ -1,9 +1,9 @@
 """
-Environment loader — parses a JSON config and builds 3D wall/door/source arrays.
+Environment loader — parses an HVAC JSON config and builds 3D grid arrays.
 
-The JSON defines rooms as rectangular open regions carved out of a solid grid.
-Everything outside a room is wall. Doors are thin slabs that connect rooms
-through walls and can be toggled at runtime.
+The JSON defines thermal zones (rooms), hallways, VAV dampers, heat sources,
+and a cooling plant. Everything outside a room/hallway is wall. VAV dampers
+are continuous actuators (A ∈ [0,1]) that inject cooling into zones.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from .stability import compute_stable_dt, validate_dt
 
 
 @dataclass
-class Source:
-    """A gas emission point in the grid."""
+class HeatSource:
+    """A heat gain in a thermal zone (occupancy, equipment, solar)."""
     name: str
-    position: tuple[int, int, int]
-    rate: float
+    zone: str
+    rate: float  # degrees/s added uniformly across the zone
     start_time: float = 0.0
     end_time: float | None = None
 
@@ -35,15 +35,30 @@ class Source:
 
 
 @dataclass
-class Door:
-    """An actuatable opening between rooms."""
+class VAVDamper:
+    """A Variable Air Volume damper that controls cooling to a zone."""
+    name: str
+    zone: str
+    position: tuple[int, int, int]
+    max_flow: float = 1.0
+    opening: float = 0.5  # A ∈ [0, 1]
+
+    @property
+    def current_flow(self) -> float:
+        """Actual cooling flow = opening * max_flow."""
+        return self.opening * self.max_flow
+
+
+@dataclass
+class Room:
+    """A thermal zone with a comfort setpoint."""
     name: str
     slices: tuple[slice, slice, slice]
-    state: str = "open"  # "open" or "closed"
+    setpoint: float = 22.0
 
 
 class Environment:
-    """Loads a JSON environment config and builds the 3D simulation arrays."""
+    """Loads an HVAC JSON config and builds the 3D simulation arrays."""
 
     def __init__(self, config_path: str | Path):
         config_path = Path(config_path)
@@ -53,9 +68,12 @@ class Environment:
         self._parse_grid()
         self._parse_physics()
         self._build_walls()
-        self._parse_sources()
+        self._parse_heat_sources()
+        self._parse_vav_dampers()
+        self._parse_cooling_plant()
         self._parse_noise()
         self._parse_sensor_config()
+        self._parse_network_config()
 
     # ── Grid ──────────────────────────────────────────────────────────────
 
@@ -71,18 +89,21 @@ class Environment:
 
     def _parse_physics(self) -> None:
         phys = self.config["physics"]
-        self.diffusion_coefficient: float = phys["diffusion_coefficient"]
+        self.thermal_diffusivity: float = phys["thermal_diffusivity"]
+        self.ambient_temperature: float = phys.get("ambient_temperature", 20.0)
 
         user_dt = phys.get("dt")
         safety = phys.get("safety_factor", 0.4)
 
         if user_dt is None or user_dt == 0:
-            self.dt: float = compute_stable_dt(self.dx, self.diffusion_coefficient, safety)
+            self.dt: float = compute_stable_dt(
+                self.dx, self.thermal_diffusivity, safety_factor=safety
+            )
         else:
-            validate_dt(user_dt, self.dx, self.diffusion_coefficient)
+            validate_dt(self.dx, self.thermal_diffusivity, user_dt)
             self.dt = user_dt
 
-    # ── Walls and Doors ───────────────────────────────────────────────────
+    # ── Walls, Rooms, Hallways ────────────────────────────────────────────
 
     def _bounds_to_slices(self, bounds: dict) -> tuple[slice, slice, slice]:
         return (
@@ -92,97 +113,130 @@ class Environment:
         )
 
     def _build_walls(self) -> None:
-        """Start with everything as wall, carve out rooms, then handle doors."""
+        """Start with everything as wall, carve out rooms and hallways."""
         self.walls = np.ones(self.grid_shape, dtype=bool)
 
-        # Carve rooms
-        for room in self.config.get("rooms", []):
-            s = self._bounds_to_slices(room["bounds"])
+        # Parse and carve rooms (thermal zones with setpoints)
+        self.rooms: dict[str, Room] = {}
+        for room_cfg in self.config.get("rooms", []):
+            s = self._bounds_to_slices(room_cfg["bounds"])
+            self.walls[s] = False
+            self.rooms[room_cfg["name"]] = Room(
+                name=room_cfg["name"],
+                slices=s,
+                setpoint=room_cfg.get("setpoint", 22.0),
+            )
+
+        # Carve hallways (no setpoint — unconditioned)
+        for hall_cfg in self.config.get("hallways", []):
+            s = self._bounds_to_slices(hall_cfg["bounds"])
             self.walls[s] = False
 
-        # Parse doors and apply initial state
-        self.doors: dict[str, Door] = {}
-        for door_cfg in self.config.get("doors", []):
-            s = self._bounds_to_slices(door_cfg["bounds"])
-            state = door_cfg.get("state", "open")
-            door = Door(name=door_cfg["name"], slices=s, state=state)
-            self.doors[door.name] = door
+        # Build zone mask: maps each cell to its room name (or None)
+        self.zone_mask: np.ndarray = np.full(self.grid_shape, "", dtype=object)
+        for room_name, room in self.rooms.items():
+            self.zone_mask[room.slices] = room_name
 
-            if state == "open":
-                self.walls[s] = False
-            else:
-                self.walls[s] = True
+    # ── Heat Sources ──────────────────────────────────────────────────────
 
-    # ── Sources ───────────────────────────────────────────────────────────
+    def _parse_heat_sources(self) -> None:
+        self.heat_sources: list[HeatSource] = []
+        for src_cfg in self.config.get("heat_sources", []):
+            zone = src_cfg["zone"]
+            if zone not in self.rooms:
+                raise ValueError(
+                    f"Heat source '{src_cfg['name']}' references unknown zone '{zone}'."
+                )
+            self.heat_sources.append(HeatSource(
+                name=src_cfg["name"],
+                zone=zone,
+                rate=src_cfg["rate"],
+                start_time=src_cfg.get("schedule", {}).get("start", 0.0),
+                end_time=src_cfg.get("schedule", {}).get("end"),
+            ))
 
-    def _parse_sources(self) -> None:
-        self.sources: list[Source] = []
-        for src_cfg in self.config.get("sources", []):
-            pos = src_cfg["position"]
+    # ── VAV Dampers ───────────────────────────────────────────────────────
+
+    def _parse_vav_dampers(self) -> None:
+        self.dampers: dict[str, VAVDamper] = {}
+        for d_cfg in self.config.get("vav_dampers", []):
+            pos = d_cfg["position"]
             position = (pos["x"], pos["y"], pos["z"])
 
-            # Validate source is not inside a wall
             if self.walls[position]:
                 raise ValueError(
-                    f"Source '{src_cfg['name']}' at {position} is inside a wall. "
-                    f"Place it inside a room."
+                    f"VAV damper '{d_cfg['name']}' at {position} is inside a wall."
                 )
 
-            self.sources.append(Source(
-                name=src_cfg["name"],
+            zone = d_cfg["zone"]
+            if zone not in self.rooms:
+                raise ValueError(
+                    f"VAV damper '{d_cfg['name']}' references unknown zone '{zone}'."
+                )
+
+            self.dampers[d_cfg["name"]] = VAVDamper(
+                name=d_cfg["name"],
+                zone=zone,
                 position=position,
-                rate=src_cfg["rate"],
-                start_time=src_cfg.get("start_time", 0.0),
-                end_time=src_cfg.get("end_time"),
-            ))
+                max_flow=d_cfg.get("max_flow", 1.0),
+                opening=d_cfg.get("initial_opening", 0.5),
+            )
+
+    # ── Cooling Plant ─────────────────────────────────────────────────────
+
+    def _parse_cooling_plant(self) -> None:
+        plant = self.config.get("cooling_plant", {})
+        self.Q_total: float = plant.get("Q_total", 5.0)
+        self.supply_temperature: float = plant.get("supply_temperature", 12.0)
 
     # ── Noise ─────────────────────────────────────────────────────────────
 
     def _parse_noise(self) -> None:
         noise = self.config.get("noise", {})
         self.sensor_sigma: float = noise.get("sensor_sigma", 0.0)
-        self.source_rate_sigma: float = noise.get("source_rate_sigma", 0.0)
 
-    # ── Sensor config ───────────────────────────────────────────────────
+    # ── Sensor config ─────────────────────────────────────────────────────
 
     def _parse_sensor_config(self) -> None:
-        """Parse the optional 'sensors' section from the JSON config.
-
-        Stores the raw config for Block 3 to consume. Does NOT resolve
-        positions here — that is Block 3's responsibility (placement.py).
-        """
         self.sensor_config: dict = self.config.get("sensors", {})
 
-    # ── Door control (runtime) ────────────────────────────────────────────
+    # ── Network config ────────────────────────────────────────────────────
 
-    def open_door(self, name: str) -> None:
-        """Open a door — carve it out of the wall mask."""
-        door = self.doors[name]
-        door.state = "open"
-        self.walls[door.slices] = False
+    def _parse_network_config(self) -> None:
+        net = self.config.get("network", {})
+        self.polling_interval: float = net.get("polling_interval", 5.0)
+        self.jitter_sigma: float = net.get("jitter_sigma", 0.5)
+        self.compute_delay: float = net.get("compute_delay", 1.0)
 
-    def close_door(self, name: str) -> None:
-        """Close a door — fill it back in as wall."""
-        door = self.doors[name]
-        door.state = "closed"
-        self.walls[door.slices] = True
+    # ── Damper control (runtime) ──────────────────────────────────────────
 
-    def get_door_state(self, name: str) -> str:
-        return self.doors[name].state
+    def set_damper_opening(self, name: str, opening: float) -> None:
+        """Set a VAV damper opening. Clamps to [0, 1]."""
+        damper = self.dampers[name]
+        damper.opening = max(0.0, min(1.0, opening))
+
+    def get_damper_opening(self, name: str) -> float:
+        return self.dampers[name].opening
+
+    def zone_cell_count(self, zone_name: str) -> int:
+        """Number of non-wall cells in a zone."""
+        room = self.rooms[zone_name]
+        return int(np.sum(~self.walls[room.slices]))
 
     # ── Info ──────────────────────────────────────────────────────────────
 
     def summary(self) -> str:
-        total = np.prod(self.grid_shape)
+        total = int(np.prod(self.grid_shape))
         open_cells = int(np.sum(~self.walls))
         return (
-            f"Environment: {self.nx}x{self.ny}x{self.nz} grid, "
-            f"dx={self.dx}m, D={self.diffusion_coefficient} m²/s, "
+            f"HVAC Environment: {self.nx}x{self.ny}x{self.nz} grid, "
+            f"dx={self.dx}m, alpha={self.thermal_diffusivity} m^2/s, "
             f"dt={self.dt:.6f}s\n"
             f"  Open cells: {open_cells}/{total} "
             f"({100*open_cells/total:.1f}%)\n"
-            f"  Rooms: {len(self.config.get('rooms', []))}\n"
-            f"  Doors: {len(self.doors)} "
-            f"({sum(1 for d in self.doors.values() if d.state == 'open')} open)\n"
-            f"  Sources: {len(self.sources)}"
+            f"  Rooms: {len(self.rooms)} "
+            f"(setpoints: {', '.join(f'{r.name}={r.setpoint}C' for r in self.rooms.values())})\n"
+            f"  VAV dampers: {len(self.dampers)}\n"
+            f"  Heat sources: {len(self.heat_sources)}\n"
+            f"  Cooling plant: Q_total={self.Q_total}, T_supply={self.supply_temperature}C"
         )

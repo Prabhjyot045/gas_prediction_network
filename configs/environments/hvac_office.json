@@ -1,0 +1,137 @@
+{
+  "grid": {
+    "nx": 30,
+    "ny": 30,
+    "nz": 3,
+    "dx": 1.0
+  },
+
+  "physics": {
+    "thermal_diffusivity": 0.02,
+    "dt": null,
+    "safety_factor": 0.4,
+    "ambient_temperature": 20.0
+  },
+
+  "rooms": [
+    {
+      "name": "office_A",
+      "bounds": { "x_min": 1, "x_max": 13, "y_min": 1, "y_max": 13, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0,
+      "description": "Bottom-left office — primary heat source"
+    },
+    {
+      "name": "office_B",
+      "bounds": { "x_min": 17, "x_max": 29, "y_min": 1, "y_max": 13, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0,
+      "description": "Bottom-right office"
+    },
+    {
+      "name": "office_C",
+      "bounds": { "x_min": 17, "x_max": 29, "y_min": 17, "y_max": 29, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0,
+      "description": "Top-right office"
+    },
+    {
+      "name": "server_room",
+      "bounds": { "x_min": 1, "x_max": 13, "y_min": 17, "y_max": 29, "z_min": 0, "z_max": 3 },
+      "setpoint": 18.0,
+      "description": "Top-left server room — high heat, low setpoint"
+    }
+  ],
+
+  "hallways": [
+    {
+      "name": "corridor_horizontal",
+      "bounds": { "x_min": 1, "x_max": 29, "y_min": 13, "y_max": 17, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "corridor_vertical",
+      "bounds": { "x_min": 13, "x_max": 17, "y_min": 1, "y_max": 29, "z_min": 0, "z_max": 3 }
+    }
+  ],
+
+  "vav_dampers": [
+    {
+      "name": "vav_office_A",
+      "zone": "office_A",
+      "position": { "x": 7, "y": 7, "z": 2 },
+      "max_flow": 1.5,
+      "initial_opening": 0.3
+    },
+    {
+      "name": "vav_office_B",
+      "zone": "office_B",
+      "position": { "x": 23, "y": 7, "z": 2 },
+      "max_flow": 1.5,
+      "initial_opening": 0.3
+    },
+    {
+      "name": "vav_office_C",
+      "zone": "office_C",
+      "position": { "x": 23, "y": 23, "z": 2 },
+      "max_flow": 1.5,
+      "initial_opening": 0.3
+    },
+    {
+      "name": "vav_server_room",
+      "zone": "server_room",
+      "position": { "x": 7, "y": 23, "z": 2 },
+      "max_flow": 2.5,
+      "initial_opening": 0.5
+    }
+  ],
+
+  "heat_sources": [
+    {
+      "name": "occupancy_A",
+      "zone": "office_A",
+      "rate": 0.3,
+      "schedule": { "start": 0, "end": null },
+      "description": "People + equipment heat in office A"
+    },
+    {
+      "name": "occupancy_B",
+      "zone": "office_B",
+      "rate": 0.2,
+      "schedule": { "start": 0, "end": null },
+      "description": "People + equipment heat in office B"
+    },
+    {
+      "name": "occupancy_C",
+      "zone": "office_C",
+      "rate": 0.15,
+      "schedule": { "start": 0, "end": null },
+      "description": "People + equipment heat in office C"
+    },
+    {
+      "name": "servers",
+      "zone": "server_room",
+      "rate": 1.0,
+      "schedule": { "start": 0, "end": null },
+      "description": "Server racks — continuous high heat output"
+    }
+  ],
+
+  "cooling_plant": {
+    "Q_total": 5.0,
+    "supply_temperature": 12.0
+  },
+
+  "sensors": {
+    "placement": "grid",
+    "spacing": 3,
+    "z_levels": [1],
+    "communication_radius": 5.0
+  },
+
+  "noise": {
+    "sensor_sigma": 0.05
+  },
+
+  "network": {
+    "polling_interval": 5.0,
+    "jitter_sigma": 0.5,
+    "compute_delay": 1.0
+  }
+}

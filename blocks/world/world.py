@@ -1,16 +1,20 @@
 """
-World — 3D FTCS diffusion engine.
+World — 3D heat diffusion + advection engine for HVAC simulation.
 
-Implements the Forward-Time Central-Space finite difference scheme for the
-scalar diffusion equation:
+Implements the equation:
 
-    ∂φ/∂t = D ∇²φ + S
+    dT/dt = alpha * nabla^2(T) + Q_heat - Q_cool
 
-where φ is gas concentration, D is the diffusion coefficient, and S is the
-source injection term.
+where T is temperature, alpha is thermal diffusivity, Q_heat is zone-level
+heat injection (occupancy/equipment/solar), and Q_cool is VAV damper cooling.
+
+The cooling term creates a local advection-like sink at damper positions,
+pulling room temperature toward the supply temperature.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 
@@ -18,16 +22,18 @@ from .environment import Environment
 
 
 class World:
-    """3D diffusion simulation driven by an Environment config."""
+    """3D thermal simulation driven by an HVAC Environment config."""
 
     def __init__(self, env: Environment):
         self.env = env
-        self.phi = np.zeros(env.grid_shape, dtype=np.float64)
+
+        # Temperature field initialized to ambient
+        self.T = np.full(env.grid_shape, env.ambient_temperature, dtype=np.float64)
         self.time: float = 0.0
         self.step_count: int = 0
 
-        # Pre-compute the diffusion multiplier: D * dt / dx^2
-        self._alpha = env.diffusion_coefficient * env.dt / env.dx**2
+        # Pre-compute diffusion multiplier: alpha * dt / dx^2
+        self._alpha = env.thermal_diffusivity * env.dt / env.dx**2
 
     # ── Core physics ──────────────────────────────────────────────────────
 
@@ -37,24 +43,20 @@ class World:
         Applies Neumann (zero-flux) BCs:
         - At grid edges: neighbor = self (reflection)
         - At internal walls: neighbor = self (no flux into walls)
-
-        This ensures walls are impermeable reflectors, not absorbers.
         """
-        phi = self.phi
+        T = self.T
         walls = self.env.walls
-        result = np.empty_like(phi)
+        result = np.empty_like(T)
 
         if direction == 1:  # forward neighbor (i+1)
             s_dst = [slice(None)] * 3
             s_src = [slice(None)] * 3
             s_dst[axis] = slice(None, -1)
             s_src[axis] = slice(1, None)
-            result[tuple(s_dst)] = phi[tuple(s_src)]
-            # Grid edge: reflect
+            result[tuple(s_dst)] = T[tuple(s_src)]
             s_edge = [slice(None)] * 3
             s_edge[axis] = -1
-            result[tuple(s_edge)] = phi[tuple(s_edge)]
-            # Wall mask for the shifted neighbor
+            result[tuple(s_edge)] = T[tuple(s_edge)]
             w = np.ones_like(walls)
             w[tuple(s_dst)] = walls[tuple(s_src)]
         else:  # backward neighbor (i-1)
@@ -62,70 +64,87 @@ class World:
             s_src = [slice(None)] * 3
             s_dst[axis] = slice(1, None)
             s_src[axis] = slice(None, -1)
-            result[tuple(s_dst)] = phi[tuple(s_src)]
-            # Grid edge: reflect
+            result[tuple(s_dst)] = T[tuple(s_src)]
             s_edge = [slice(None)] * 3
             s_edge[axis] = 0
-            result[tuple(s_edge)] = phi[tuple(s_edge)]
-            # Wall mask for the shifted neighbor
+            result[tuple(s_edge)] = T[tuple(s_edge)]
             w = np.ones_like(walls)
             w[tuple(s_dst)] = walls[tuple(s_src)]
 
-        # Where neighbor is a wall, use center value (zero gradient = zero flux)
-        result = np.where(w, phi, result)
+        result = np.where(w, T, result)
         return result
 
     def _laplacian(self) -> np.ndarray:
-        """Compute the discrete 3D Laplacian with Neumann BCs at walls.
-
-        For each of the 6 neighbors (±x, ±y, ±z):
-        - If the neighbor is a non-wall cell, use its phi value
-        - If the neighbor is a wall or grid edge, use the center cell's value
-        This gives ∂φ/∂n = 0 at every wall face (impermeable, no absorption).
-        """
-        lap = np.zeros_like(self.phi)
+        """Compute the discrete 3D Laplacian with Neumann BCs at walls."""
+        lap = np.zeros_like(self.T)
         for axis in range(3):
             fwd = self._shifted(axis, +1)
             bwd = self._shifted(axis, -1)
-            lap += fwd + bwd - 2.0 * self.phi
+            lap += fwd + bwd - 2.0 * self.T
         return lap
 
-    def _inject_sources(self) -> None:
-        """Add gas from active sources."""
-        for src in self.env.sources:
+    def _inject_heat(self) -> None:
+        """Add heat from active sources (distributed uniformly over zone cells)."""
+        for src in self.env.heat_sources:
             if src.is_active(self.time):
-                rate = src.rate
-                if self.env.source_rate_sigma > 0:
-                    rate += np.random.normal(0, self.env.source_rate_sigma)
-                    rate = max(0.0, rate)
-                self.phi[src.position] += rate * self.env.dt
+                room = self.env.rooms[src.zone]
+                zone_mask = ~self.env.walls[room.slices]
+                n_cells = int(np.sum(zone_mask))
+                if n_cells > 0:
+                    # Distribute rate uniformly across zone
+                    self.T[room.slices][zone_mask] += src.rate * self.env.dt
+
+    def _apply_cooling(self) -> None:
+        """Apply VAV damper cooling at damper positions.
+
+        Cooling pulls local temperature toward supply temperature,
+        proportional to damper flow:
+
+            T_new = T - flow * (T - T_supply) * dt
+
+        where flow is the damper's current cooling capacity.
+        Total cooling across all dampers is capped at Q_total.
+        """
+        # Compute total requested flow
+        total_flow = sum(d.current_flow for d in self.env.dampers.values())
+
+        # Scale factor if total exceeds budget
+        if total_flow > self.env.Q_total and total_flow > 0:
+            scale = self.env.Q_total / total_flow
+        else:
+            scale = 1.0
+
+        T_supply = self.env.supply_temperature
+
+        for damper in self.env.dampers.values():
+            pos = damper.position
+            if self.env.walls[pos]:
+                continue
+            flow = damper.current_flow * scale
+            # Cool toward supply temperature
+            delta = flow * (self.T[pos] - T_supply) * self.env.dt
+            self.T[pos] -= delta
 
     def _enforce_walls(self) -> None:
-        """Zero out concentration inside wall cells.
-
-        Walls are solid — they cannot hold gas. This is NOT an absorbing BC;
-        the Laplacian already uses Neumann (zero-flux) BCs so gas reflects
-        off walls rather than flowing into them.
-        """
-        self.phi[self.env.walls] = 0.0
+        """Set wall cells to ambient temperature (walls are thermally neutral)."""
+        self.T[self.env.walls] = self.env.ambient_temperature
 
     # ── Public interface ──────────────────────────────────────────────────
 
     def step(self) -> None:
         """Advance the simulation by one time step."""
-        # Diffusion update: φ_new = φ + α * ∇²φ
-        # The Laplacian handles Neumann BCs at walls internally
+        # Diffusion: T_new = T + alpha * dt/dx^2 * laplacian(T)
         lap = self._laplacian()
-        self.phi += self._alpha * lap
+        self.T += self._alpha * lap
 
-        # Inject sources
-        self._inject_sources()
+        # Heat injection from sources
+        self._inject_heat()
 
-        # Zero wall cells (walls are solid, cannot hold gas)
+        # Cooling from VAV dampers
+        self._apply_cooling()
+
+        # Enforce wall condition
         self._enforce_walls()
-
-        # Clamp negative values (numerical noise)
-        np.clip(self.phi, 0.0, None, out=self.phi)
 
         self.time += self.env.dt
         self.step_count += 1
@@ -135,55 +154,81 @@ class World:
         for _ in range(n_steps):
             self.step()
 
-    def close_door(self, name: str) -> None:
-        """Close a door — updates wall mask AND zeros concentration in the door cells.
+    # ── Damper control ────────────────────────────────────────────────────
 
-        This is a hard boundary: gas already in the door region is removed,
-        and no further diffusion occurs through this region.
-        """
-        self.env.close_door(name)
-        door = self.env.doors[name]
-        self.phi[door.slices] = 0.0
+    def set_damper(self, name: str, opening: float) -> None:
+        """Set a VAV damper opening (delegates to env)."""
+        self.env.set_damper_opening(name, opening)
 
-    def open_door(self, name: str) -> None:
-        """Open a door — removes wall mask at door cells.
+    # ── Zone queries ──────────────────────────────────────────────────────
 
-        Concentration in the newly opened cells starts at zero (physically:
-        the door frame was sealed and contains no gas).
-        """
-        self.env.open_door(name)
+    def zone_mean_temperature(self, zone_name: str) -> float:
+        """Mean temperature in a zone (non-wall cells only)."""
+        room = self.env.rooms[zone_name]
+        zone_T = self.T[room.slices]
+        zone_mask = ~self.env.walls[room.slices]
+        if np.sum(zone_mask) == 0:
+            return self.env.ambient_temperature
+        return float(np.mean(zone_T[zone_mask]))
 
-    def get_concentration(self) -> np.ndarray:
-        """Return a read-only view of the concentration field."""
-        result = self.phi.copy()
-        result.flags.writeable = False
-        return result
+    def zone_max_temperature(self, zone_name: str) -> float:
+        """Maximum temperature in a zone."""
+        room = self.env.rooms[zone_name]
+        zone_T = self.T[room.slices]
+        zone_mask = ~self.env.walls[room.slices]
+        if np.sum(zone_mask) == 0:
+            return self.env.ambient_temperature
+        return float(np.max(zone_T[zone_mask]))
 
-    def total_mass(self) -> float:
-        """Total gas in the system (sum of concentration over all open cells)."""
-        return float(np.sum(self.phi[~self.env.walls]))
+    def zone_overshoot(self, zone_name: str) -> float:
+        """Degrees above setpoint (0 if within setpoint)."""
+        room = self.env.rooms[zone_name]
+        mean_T = self.zone_mean_temperature(zone_name)
+        return max(0.0, mean_T - room.setpoint)
 
-    def contaminated_volume(self, threshold: float = 0.1) -> int:
-        """Number of open cells with concentration above threshold."""
-        above = (self.phi > threshold) & (~self.env.walls)
-        return int(np.sum(above))
+    def total_overshoot(self) -> float:
+        """Sum of overshoots across all zones."""
+        return sum(self.zone_overshoot(z) for z in self.env.rooms)
 
-    def metrics(self, threshold: float = 0.1) -> dict:
+    def max_overshoot(self) -> float:
+        """Maximum overshoot across all zones."""
+        if not self.env.rooms:
+            return 0.0
+        return max(self.zone_overshoot(z) for z in self.env.rooms)
+
+    def comfort_violation(self) -> float:
+        """Time-integrated overshoot for this step (sum_zones overshoot * dt)."""
+        return self.total_overshoot() * self.env.dt
+
+    def total_cooling_energy(self) -> float:
+        """Total cooling power being applied this step (flow * dt)."""
+        total_flow = sum(d.current_flow for d in self.env.dampers.values())
+        scale = 1.0
+        if total_flow > self.env.Q_total and total_flow > 0:
+            scale = self.env.Q_total / total_flow
+        return total_flow * scale * self.env.dt
+
+    # ── Metrics ───────────────────────────────────────────────────────────
+
+    def metrics(self) -> dict[str, Any]:
         """Return all current metrics as a flat dictionary for reporting."""
+        zone_temps = {
+            z: round(self.zone_mean_temperature(z), 4)
+            for z in self.env.rooms
+        }
+        zone_overshoots = {
+            z: round(self.zone_overshoot(z), 4)
+            for z in self.env.rooms
+        }
         return {
             "step": self.step_count,
             "time": round(self.time, 6),
-            "total_mass": self.total_mass(),
-            "contaminated_volume": self.contaminated_volume(threshold),
-            "contamination_integral_dt": self.contamination_integral(threshold),
-            "peak_concentration": float(np.max(self.phi)),
+            "zone_temperatures": zone_temps,
+            "zone_overshoots": zone_overshoots,
+            "max_overshoot": round(self.max_overshoot(), 4),
+            "total_overshoot": round(self.total_overshoot(), 4),
+            "comfort_violation_dt": round(self.comfort_violation(), 6),
+            "peak_temperature": round(float(np.max(self.T)), 4),
+            "mean_temperature": round(float(np.mean(self.T[~self.env.walls])), 4),
+            "cooling_energy_dt": round(self.total_cooling_energy(), 6),
         }
-
-    def contamination_integral(self, threshold: float = 0.1) -> float:
-        """Contribution to the time-integrated contamination volume for this step.
-
-        Returns: count_of_contaminated_cells * dx^3 * dt
-        Call this every step and accumulate for the benchmark metric.
-        """
-        vol = self.contaminated_volume(threshold)
-        return vol * self.env.dx**3 * self.env.dt

@@ -1,9 +1,9 @@
 """
-Simulation — full integration of all VDPA blocks.
+Simulation — full integration of all Aether-Edge blocks.
 
-Ties together World, SensorNetwork, SensorField, ActuatorController, and
-MetricsCollector into a single simulation loop. Supports both VDPA
-(predictive) and centralized (reactive) actuation policies.
+Ties together World, SensorNetwork, SensorField, DamperController, and
+MetricsCollector into a single simulation loop. Supports both edge
+(decentralized) and centralized actuation policies.
 """
 
 from __future__ import annotations
@@ -18,27 +18,25 @@ from blocks.world.environment import Environment
 from blocks.world.world import World
 from blocks.network.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import ActuatorController
+from blocks.actuator.controller import DamperController
 from blocks.metrics.collector import MetricsCollector
 
 
 class Simulation:
-    """Full VDPA simulation driving all blocks in a synchronous loop."""
+    """Full HVAC simulation driving all blocks in a synchronous loop."""
 
     def __init__(
         self,
         env_config: str | Path,
         *,
         # Actuator
-        actuator_policy: str = "predictive",
-        actuator_horizon: float = 5.0,
-        concentration_threshold: float = 0.5,
-        proximity_radius: float = 3.0,
+        actuator_policy: str = "edge",
+        proximity_radius: float = 5.0,
         # Sensor field
-        gossip_rounds: int = 1,
-        detection_threshold: float = 0.01,
+        gossip_rounds: int = 2,
+        talk_threshold: float = 0.01,
         max_hops: int = 10,
-        process_noise_var: float = 0.01,
+        buffer_seconds: float = 30.0,
         seed: int | None = 42,
         # Network
         comm_radius: float | None = None,
@@ -51,42 +49,44 @@ class Simulation:
         self.sensor_field = SensorField(
             self.env, self.network,
             gossip_rounds=gossip_rounds,
-            detection_threshold=detection_threshold,
+            talk_threshold=talk_threshold,
             max_hops=max_hops,
-            process_noise_var=process_noise_var,
+            buffer_seconds=buffer_seconds,
             seed=seed,
         )
-        self.actuator = ActuatorController(
+        self.actuator = DamperController(
             self.env, self.sensor_field,
             policy=actuator_policy,
-            horizon=actuator_horizon,
-            concentration_threshold=concentration_threshold,
             proximity_radius=proximity_radius,
+            polling_interval=self.env.polling_interval,
+            jitter_sigma=self.env.jitter_sigma,
+            compute_delay=self.env.compute_delay,
+            seed=seed,
         )
         self.collector = MetricsCollector(name)
         self.collector.set_metadata(
             environment=str(env_config),
             policy=actuator_policy,
-            horizon=actuator_horizon,
-            concentration_threshold=concentration_threshold,
             gossip_rounds=gossip_rounds,
             seed=seed,
         )
 
-        # Track cumulative contamination integral
-        self._contamination_integral: float = 0.0
+        # Accumulate comfort violation over time
+        self._comfort_violation_integral: float = 0.0
+        self._energy_integral: float = 0.0
 
     # ── Run ────────────────────────────────────────────────────────────
 
     def step(self) -> None:
         """Advance the simulation by one time step.
 
-        Order: world physics → sensor sensing → actuator evaluation.
+        Order: world physics -> sensor sensing -> actuator evaluation.
         """
         self.world.step()
         self.sensor_field.step(self.world)
         self.actuator.evaluate(self.world)
-        self._contamination_integral += self.world.contamination_integral()
+        self._comfort_violation_integral += self.world.comfort_violation()
+        self._energy_integral += self.world.total_cooling_energy()
 
     def run(
         self,
@@ -96,13 +96,7 @@ class Simulation:
     ) -> MetricsCollector:
         """Run the simulation for n_steps.
 
-        Args:
-            n_steps: Number of simulation steps.
-            record_every: Record metrics every N steps.
-            step_callback: Optional callback(sim, step) called each step.
-
-        Returns:
-            The MetricsCollector with all recorded data.
+        Returns the MetricsCollector with all recorded data.
         """
         for i in range(n_steps):
             self.step()
@@ -124,59 +118,52 @@ class Simulation:
 
         record = {
             **world_m,
-            "concentration_rmse": sensor_m.get("concentration_rmse"),
-            "n_detecting": sensor_m["n_detecting"],
-            "prediction_coverage": sensor_m["prediction_coverage"],
+            "temperature_rmse": sensor_m.get("temperature_rmse"),
+            "n_heating": sensor_m["n_heating"],
+            "urgency_coverage": sensor_m["urgency_coverage"],
             "total_gossip_messages": sensor_m["total_messages_sent"],
-            "doors_closed": actuator_m["doors_closed"],
-            "cumulative_contamination": round(self._contamination_integral, 6),
+            "mean_age_of_information": actuator_m["mean_age_of_information"],
+            "cumulative_comfort_violation": round(self._comfort_violation_integral, 6),
+            "cumulative_energy": round(self._energy_integral, 6),
         }
 
         self.collector.record(record, step=step)
 
-        # Also record key scalars for easy time-series plotting
-        self.collector.record_scalar("total_mass", world_m["total_mass"], step)
-        self.collector.record_scalar("contaminated_volume", world_m["contaminated_volume"], step)
-        self.collector.record_scalar("cumulative_contamination", self._contamination_integral, step)
-        self.collector.record_scalar("peak_concentration", world_m["peak_concentration"], step)
-        if sensor_m.get("concentration_rmse") is not None:
-            self.collector.record_scalar("concentration_rmse", sensor_m["concentration_rmse"], step)
-        self.collector.record_scalar("prediction_coverage", sensor_m["prediction_coverage"], step)
-        self.collector.record_scalar("n_detecting", sensor_m["n_detecting"], step)
+        # Scalar time-series
+        self.collector.record_scalar("max_overshoot", world_m["max_overshoot"], step)
+        self.collector.record_scalar("total_overshoot", world_m["total_overshoot"], step)
+        self.collector.record_scalar("mean_temperature", world_m["mean_temperature"], step)
+        self.collector.record_scalar("cumulative_comfort_violation", self._comfort_violation_integral, step)
+        self.collector.record_scalar("cumulative_energy", self._energy_integral, step)
+        if sensor_m.get("temperature_rmse") is not None:
+            self.collector.record_scalar("temperature_rmse", sensor_m["temperature_rmse"], step)
 
     # ── Convenience ────────────────────────────────────────────────────
 
     @property
-    def cumulative_contamination(self) -> float:
-        """Time-integrated contamination volume (primary benchmark metric)."""
-        return self._contamination_integral
+    def cumulative_comfort_violation(self) -> float:
+        return self._comfort_violation_integral
+
+    @property
+    def cumulative_energy(self) -> float:
+        return self._energy_integral
 
     def summary(self) -> str:
-        """Human-readable summary of current simulation state."""
         w = self.world
         a = self.actuator
         return (
             f"Simulation: {w.step_count} steps, t={w.time:.4f}s\n"
             f"  Policy: {a.policy}\n"
-            f"  Total mass: {w.total_mass():.4f}\n"
-            f"  Contaminated volume: {w.contaminated_volume()}\n"
-            f"  Cumulative contamination: {self._contamination_integral:.4f}\n"
-            f"  Doors closed: {a.doors_closed}/{len(self.env.doors)}\n"
-            f"  Response time: {a.response_time}"
+            f"  Max overshoot: {w.max_overshoot():.4f}C\n"
+            f"  Cumulative comfort violation: {self._comfort_violation_integral:.4f}\n"
+            f"  Cumulative energy: {self._energy_integral:.4f}\n"
+            f"  Mean AoI: {a.mean_age_of_information:.4f}s\n"
+            f"  Gossip messages: {a.total_messages}"
         )
 
     @classmethod
     def from_config(cls, config_path: str | Path) -> Simulation:
-        """Create a Simulation from a JSON config file.
-
-        Config schema:
-        {
-            "environment": "path/to/env.json",
-            "actuator": {"policy": "predictive", "horizon": 5.0, ...},
-            "sensor_field": {"gossip_rounds": 1, ...},
-            "simulation": {"seed": 42, "name": "my_run"}
-        }
-        """
+        """Create a Simulation from a JSON config file."""
         with open(config_path) as f:
             cfg = json.load(f)
 
@@ -187,13 +174,12 @@ class Simulation:
 
         return cls(
             env_config=env_path,
-            actuator_policy=act.get("policy", "predictive"),
-            actuator_horizon=act.get("horizon", 5.0),
-            concentration_threshold=act.get("concentration_threshold", 0.5),
-            proximity_radius=act.get("proximity_radius", 3.0),
-            gossip_rounds=sf.get("gossip_rounds", 1),
-            detection_threshold=sf.get("detection_threshold", 0.01),
+            actuator_policy=act.get("policy", "edge"),
+            proximity_radius=act.get("proximity_radius", 5.0),
+            gossip_rounds=sf.get("gossip_rounds", 2),
+            talk_threshold=sf.get("talk_threshold", 0.01),
             max_hops=sf.get("max_hops", 10),
+            buffer_seconds=sf.get("buffer_seconds", 30.0),
             seed=sim.get("seed", 42),
             name=sim.get("name", "simulation"),
         )

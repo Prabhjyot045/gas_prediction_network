@@ -1,9 +1,9 @@
 """
-GossipMessage — data structure for inter-node gossip communication.
+NegotiationMessage — inter-node gossip message for HVAC consensus.
 
-The gossip protocol enables distributed prediction: when a node detects
-gas, it broadcasts gradient and velocity estimates to neighbors. These
-propagate through the network so distant nodes can actuate preemptively.
+Nodes share their thermal urgency (1/TTI) and local state with neighbors
+so the mesh can converge on a fair cooling allocation without a central
+coordinator.
 """
 
 from __future__ import annotations
@@ -14,33 +14,28 @@ import numpy as np
 
 
 @dataclass
-class GossipMessage:
-    """A gossip message carrying gas detection and prediction data.
+class NegotiationMessage:
+    """A gossip message carrying thermal urgency and local state."""
+    origin_node: str
+    origin_position: tuple[int, int, int]
+    sender_node: str
+    timestamp: float
+    temperature: float
+    dT_dt: float          # rate of temperature change
+    gradient: np.ndarray  # spatial gradient direction
+    urgency: float        # 1/TTI — higher means more urgent
+    hops: int = 0
 
-    Messages originate at nodes that detect gas above a threshold, then
-    relay hop-by-hop through the sensor network. Each receiving node
-    uses the velocity estimate to predict when gas will arrive at its
-    own position.
-    """
-
-    origin_node: str                        # node that originally detected gas
-    origin_position: tuple[int, int, int]   # grid position of origin
-    sender_node: str                        # node relaying this message
-    timestamp: float                        # world time of detection
-    concentration: float                    # concentration at origin
-    gradient: np.ndarray                    # spatial gradient at origin (3,)
-    velocity: np.ndarray                    # estimated flow velocity at origin (3,)
-    hops: int = 0                           # relay hop count
-
-    def forward(self, relay_node: str) -> GossipMessage:
-        """Create a forwarded copy for relay to the next hop."""
-        return GossipMessage(
+    def forward(self, relay_node: str) -> NegotiationMessage:
+        """Create a forwarded copy with incremented hop count."""
+        return NegotiationMessage(
             origin_node=self.origin_node,
             origin_position=self.origin_position,
             sender_node=relay_node,
             timestamp=self.timestamp,
-            concentration=self.concentration,
+            temperature=self.temperature,
+            dT_dt=self.dT_dt,
             gradient=self.gradient.copy(),
-            velocity=self.velocity.copy(),
+            urgency=self.urgency,
             hops=self.hops + 1,
         )

@@ -1,14 +1,14 @@
 """
-Integration tests — Block 1 (World) + Block 2 (Visualization) + Block 3 (Network)
-                   + Block 4 (Sensor) + Metrics.
+Integration tests — all HVAC blocks working together.
 
 Verifies:
 - Shared Environment object stays in sync across all blocks
-- Door state changes propagate correctly
-- Volume data integrity
-- AnimationState frame-by-frame control
+- Temperature field integrity between World and Renderer
 - Sensor network uses same environment
-- SensorField reads from World and uses Network topology
+- SensorField reads temperatures from World, computes TTI/urgency
+- DamperController uses SensorField data to set VAV openings
+- Simulation loop ties all blocks together
+- Benchmark runs edge vs centralized comparison
 - MetricsCollector accumulates from all blocks
 - Decoupling between blocks
 
@@ -31,7 +31,7 @@ from blocks.world.world import World
 from blocks.visualization.renderer import Renderer
 from blocks.network.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import ActuatorController
+from blocks.actuator.controller import DamperController
 from blocks.simulation.simulation import Simulation
 from blocks.benchmark.benchmark import Benchmark
 from blocks.metrics.collector import MetricsCollector
@@ -50,32 +50,40 @@ def _write_config(config: dict) -> Path:
 
 
 def _two_room_config() -> dict:
-    """Two rooms connected by a door, with a gas source in the left room."""
+    """Two rooms connected by a hallway, with a heat source in room_A."""
     return {
-        "grid": {"nx": 12, "ny": 10, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "grid": {"nx": 12, "ny": 12, "nz": 3, "dx": 1.0},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
-            {"name": "left", "bounds": {
-                "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
+            {"name": "room_A", "bounds": {
+                "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
+            }, "setpoint": 22.0},
+            {"name": "room_B", "bounds": {
+                "x_min": 7, "x_max": 11, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
+            }, "setpoint": 22.0},
+        ],
+        "hallways": [
+            {"name": "corridor", "bounds": {
+                "x_min": 5, "x_max": 7, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
             }},
-            {"name": "right", "bounds": {
-                "x_min": 7, "x_max": 11, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }},
         ],
-        "doors": [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 7, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 3
-            }, "state": "open"}
+        "vav_dampers": [
+            {"name": "vav_A", "zone": "room_A",
+             "position": {"x": 3, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
+            {"name": "vav_B", "zone": "room_B",
+             "position": {"x": 9, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
         ],
-        "sources": [
-            {"name": "leak", "position": {"x": 3, "y": 5, "z": 1}, "rate": 5.0}
+        "heat_sources": [
+            {"name": "heat_A", "zone": "room_A", "rate": 0.5,
+             "schedule": {"start": 0, "end": None}},
         ],
-        "sensors": {
-            "placement": "grid",
-            "spacing": 2,
-            "z_levels": [1],
-            "communication_radius": 4.0,
-        },
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
+        "sensors": {"placement": "grid", "spacing": 3, "z_levels": [1],
+                     "communication_radius": 5.0},
+        "noise": {"sensor_sigma": 0.0},
+        "network": {"polling_interval": 5.0, "jitter_sigma": 0.5, "compute_delay": 1.0},
     }
 
 
@@ -105,118 +113,56 @@ class TestSharedEnvironment:
         env, world, renderer = setup
         assert world.env.walls is renderer.env.walls
 
-    def test_door_state_consistent(self, setup):
-        """Door state seen by Renderer matches World's env."""
+    def test_damper_config_shared(self, setup):
+        """Damper config is accessible from the shared env."""
         env, world, renderer = setup
-        assert renderer.env.get_door_state("mid_door") == "open"
-        world.close_door("mid_door")
-        assert renderer.env.get_door_state("mid_door") == "closed"
+        assert "vav_A" in env.dampers
+        assert "vav_B" in env.dampers
+        assert env.dampers["vav_A"].zone == "room_A"
+
+    def test_room_setpoints_accessible(self, setup):
+        """Room setpoints are part of the shared environment."""
+        env, world, renderer = setup
+        assert env.rooms["room_A"].setpoint == 22.0
+        assert env.rooms["room_B"].setpoint == 22.0
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 2. Door toggle propagation
+# 2. Temperature field integrity
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestDoorPropagation:
-    def test_close_door_updates_walls_for_renderer(self, setup):
-        """Closing a door via World should change walls that Renderer reads."""
-        env, world, renderer = setup
-        # Door region should be open initially
-        assert not env.walls[5, 4, 1]
-        assert not env.walls[6, 5, 2]
-
-        world.close_door("mid_door")
-
-        # Now the door region is wall
-        assert env.walls[5, 4, 1]
-        assert env.walls[6, 5, 2]
-        # Renderer detects the change
-        assert renderer.walls_changed
-
-    def test_renderer_rebuilds_after_door_close(self, setup):
-        """Renderer mesh rebuild picks up new wall state."""
-        env, world, renderer = setup
-        old_wall_points = renderer._wall_mesh.n_points
-
-        world.close_door("mid_door")
-        renderer.rebuild_meshes()
-
-        # More wall points now (door cells became walls)
-        assert renderer._wall_mesh.n_points > old_wall_points
-        # Change flag should be cleared
-        assert not renderer.walls_changed
-
-    def test_open_door_reverses(self, setup):
-        """Opening a closed door restores wall mesh to original state."""
-        env, world, renderer = setup
-        original_points = renderer._wall_mesh.n_points
-
-        world.close_door("mid_door")
-        renderer.rebuild_meshes()
-        closed_points = renderer._wall_mesh.n_points
-
-        world.open_door("mid_door")
-        renderer.rebuild_meshes()
-
-        assert renderer._wall_mesh.n_points == original_points
-        assert renderer._wall_mesh.n_points < closed_points
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 3. Volume data integrity
-# ══════════════════════════════════════════════════════════════════════════
-
-class TestVolumeDataIntegrity:
-    def test_volume_matches_phi_after_stepping(self, setup):
-        """Volume data in renderer should exactly match World.phi."""
+class TestTemperatureIntegrity:
+    def test_temperature_volume_matches_world(self, setup):
+        """Renderer volume data should match World.T exactly."""
         env, world, renderer = setup
         world.run(50)
 
-        phi = world.get_concentration()
-        vol = renderer._build_concentration_volume(phi)
-        vol_data = vol.cell_data["concentration"].reshape(
+        vol = renderer._build_temperature_volume(world.T)
+        vol_data = vol.cell_data["temperature"].reshape(
             env.grid_shape, order="F"
         )
 
-        np.testing.assert_array_equal(vol_data, phi)
+        np.testing.assert_array_equal(vol_data, world.T)
 
-    def test_volume_shows_zero_behind_closed_door(self, setup):
-        """After closing a door, right room should have zero gas."""
+    def test_temperature_initialized_to_ambient(self, setup):
+        """World temperature field starts at ambient temperature."""
         env, world, renderer = setup
-        world.close_door("mid_door")
-        world.run(200)
+        assert np.allclose(world.T, env.ambient_temperature)
 
-        phi = world.get_concentration()
-        vol = renderer._build_concentration_volume(phi)
-        vol_data = vol.cell_data["concentration"].reshape(
-            env.grid_shape, order="F"
-        )
-
-        # Right room: x=7..10, y=1..8
-        right_room = vol_data[7:11, 1:9, :]
-        assert np.max(right_room) < 1e-10
-
-        # Left room should have gas
-        left_room = vol_data[1:5, 1:9, :]
-        assert np.max(left_room) > 0.1
-
-    def test_volume_shows_gas_in_both_rooms_with_open_door(self, setup):
-        """With open door, gas should flow to both rooms."""
+    def test_heat_source_raises_temperature(self, setup):
+        """Running the world with a heat source should raise room_A temperature."""
         env, world, renderer = setup
-        world.run(300)
+        room_A = env.rooms["room_A"]
+        initial_temp = world.T[room_A.slices].mean()
 
-        phi = world.get_concentration()
-        vol = renderer._build_concentration_volume(phi)
-        vol_data = vol.cell_data["concentration"].reshape(
-            env.grid_shape, order="F"
-        )
+        world.run(50)
 
-        right_room = vol_data[7:11, 1:9, :]
-        assert np.max(right_room) > 0.01
+        final_temp = world.T[room_A.slices].mean()
+        assert final_temp > initial_temp
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 4. Snapshot rendering with door states
+# 3. Snapshot rendering
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSnapshotIntegration:
@@ -228,146 +174,9 @@ class TestSnapshotIntegration:
         assert isinstance(pl, pv.Plotter)
         pl.close()
 
-    def test_snapshot_auto_rebuilds_on_door_change(self, setup):
-        """snapshot() should auto-detect wall changes and rebuild."""
-        env, world, renderer = setup
-        world.close_door("mid_door")
-        # Don't manually call rebuild — snapshot should do it
-        pl = renderer.snapshot(world, title="Door Closed")
-        assert isinstance(pl, pv.Plotter)
-        # walls_changed should now be False (snapshot triggered rebuild)
-        assert not renderer.walls_changed
-        pl.close()
-
 
 # ══════════════════════════════════════════════════════════════════════════
-# 5. AnimationState — frame-by-frame control
-# ══════════════════════════════════════════════════════════════════════════
-
-class TestAnimationState:
-    def test_external_loop_control(self, setup):
-        """Caller drives the simulation; AnimationState only renders."""
-        env, world, renderer = setup
-        anim = renderer.create_animation_plotter(
-            world, off_screen=True,
-        )
-        anim.start()
-
-        # Caller steps the world, then updates the frame
-        for _ in range(10):
-            world.step()
-        anim.update_frame()
-
-        assert world.step_count == 10
-        anim.finish()
-
-    def test_mid_animation_door_close(self, setup):
-        """Closing a door mid-animation should update visuals."""
-        env, world, renderer = setup
-        anim = renderer.create_animation_plotter(
-            world, off_screen=True,
-        )
-        anim.start()
-
-        # Run some steps with door open
-        for _ in range(50):
-            world.step()
-        anim.update_frame()
-
-        # Close door mid-animation
-        world.close_door("mid_door")
-
-        # Next frame should detect the change and rebuild
-        for _ in range(10):
-            world.step()
-        anim.update_frame()  # Should not crash, should rebuild meshes
-
-        assert env.get_door_state("mid_door") == "closed"
-        assert not renderer.walls_changed  # rebuild happened
-        anim.finish()
-
-    def test_frame_callback_in_animate(self, setup):
-        """animate() frame_callback is called with correct args."""
-        env, world, renderer = setup
-        callback_log = []
-
-        def my_callback(w: World, frame: int):
-            callback_log.append((w.step_count, frame))
-            if frame == 2:
-                w.close_door("mid_door")
-
-        renderer.animate(
-            world, n_frames=5, steps_per_frame=3,
-            frame_callback=my_callback,
-            gif_path=None,
-        )
-
-        # Callback was called for each frame
-        assert len(callback_log) == 5
-        # Door was closed at frame 2
-        assert env.get_door_state("mid_door") == "closed"
-        # Steps: 5 frames * 3 steps/frame = 15
-        assert world.step_count == 15
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 6. Decoupling verification
-# ══════════════════════════════════════════════════════════════════════════
-
-class TestDecoupling:
-    def test_renderer_does_not_step_world(self, setup):
-        """Renderer methods should never advance the World."""
-        env, world, renderer = setup
-        assert world.step_count == 0
-
-        # snapshot does not step
-        pl = renderer.snapshot(world)
-        assert world.step_count == 0
-        pl.close()
-
-        # rebuild does not step
-        renderer.rebuild_meshes()
-        assert world.step_count == 0
-
-    def test_animation_state_does_not_step(self, setup):
-        """AnimationState.update_frame() does not call world.step()."""
-        env, world, renderer = setup
-        anim = renderer.create_animation_plotter(world, off_screen=True)
-        anim.start()
-
-        anim.update_frame()
-        assert world.step_count == 0  # Renderer didn't step it
-
-        world.run(5)
-        anim.update_frame()
-        assert world.step_count == 5  # Only caller's steps counted
-
-        anim.finish()
-
-    def test_blocks_work_independently(self):
-        """Each block works with only Environment as the shared interface."""
-        cfg = _write_config(_two_room_config())
-
-        # Block 1 only
-        env1 = Environment(cfg)
-        world = World(env1)
-        world.run(100)
-        assert world.total_mass() > 0
-
-        # Block 2 only (separate env instance)
-        env2 = Environment(cfg)
-        renderer = Renderer(env2)
-        assert renderer._wall_mesh.n_points > 0
-
-        # They CAN work together when given the same env
-        renderer_shared = Renderer(env1)
-        pl = renderer_shared.snapshot(world)
-        assert isinstance(pl, pv.Plotter)
-        pl.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 7. Network integration (Block 3 ↔ Block 1)
+# 4. Network integration (Block 3 ↔ Block 1)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestNetworkIntegration:
@@ -384,19 +193,6 @@ class TestNetworkIntegration:
         for name, pos in net.positions.items():
             assert not env.walls[pos], f"Sensor {name} at {pos} is in a wall"
 
-    def test_door_change_does_not_affect_topology(self, setup):
-        """Sensor network topology is static — door changes don't alter it."""
-        env, world, renderer = setup
-        net = SensorNetwork(env)
-        original_edges = net.n_edges
-        original_nodes = net.n_nodes
-
-        world.close_door("mid_door")
-
-        # Topology unchanged (sensors don't move when doors close)
-        assert net.n_edges == original_edges
-        assert net.n_nodes == original_nodes
-
     def test_network_metrics_well_formed(self, setup):
         """network.metrics() should return a complete dict."""
         env, world, renderer = setup
@@ -408,7 +204,7 @@ class TestNetworkIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 8. Metrics integration (MetricsCollector ↔ all blocks)
+# 5. Metrics integration (MetricsCollector ↔ all blocks)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestMetricsIntegration:
@@ -418,8 +214,8 @@ class TestMetricsIntegration:
         world.run(10)
         m = world.metrics()
         assert "step" in m
-        assert "total_mass" in m
-        assert "peak_concentration" in m
+        assert "mean_temperature" in m
+        assert "max_overshoot" in m
         assert m["step"] == 10
 
     def test_collector_accumulates_world_metrics(self, setup):
@@ -431,13 +227,11 @@ class TestMetricsIntegration:
             world.step()
             m = world.metrics()
             mc.record(m, step=world.step_count)
-            mc.record_scalar("total_mass", m["total_mass"], world.step_count)
+            mc.record_scalar("mean_temperature", m["mean_temperature"], world.step_count)
 
         assert len(mc.records) == 5
-        steps, values = mc.scalar_series("total_mass")
+        steps, values = mc.scalar_series("mean_temperature")
         assert len(steps) == 5
-        # Mass should be increasing (source is active)
-        assert values[-1] > values[0]
 
     def test_collector_accumulates_network_metrics(self, setup):
         """MetricsCollector should store network topology metrics."""
@@ -461,7 +255,6 @@ class TestMetricsIntegration:
 
         snap = mc.snapshot()
         assert snap["n_records"] == 2
-        assert snap["metadata"]["comm_radius"] == 4.0
 
     def test_collector_save_and_reload(self, setup, tmp_path):
         """Save to JSON and verify it's loadable."""
@@ -479,7 +272,7 @@ class TestMetricsIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 9. SensorField integration (Block 4 ↔ Block 1 + Block 3)
+# 6. SensorField integration (Block 4 ↔ Block 1 + Block 3)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSensorFieldIntegration:
@@ -492,8 +285,8 @@ class TestSensorFieldIntegration:
         assert field.network is net
         assert field.env is world.env
 
-    def test_sensor_field_reads_from_world(self, setup):
-        """SensorField nodes should read concentration from World's phi."""
+    def test_sensor_field_reads_temperature_from_world(self, setup):
+        """SensorField nodes should read temperature from World's T field."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
@@ -501,11 +294,12 @@ class TestSensorFieldIntegration:
         world.run(50)
         field.step(world)
 
-        # At least one node near the source should have non-zero reading
-        any_nonzero = any(
-            n.filtered_concentration > 0.0 for n in field.nodes.values()
+        # Nodes near the heat source (room_A) should have temperature above ambient
+        any_heated = any(
+            n.filtered_temperature > env.ambient_temperature
+            for n in field.nodes.values()
         )
-        assert any_nonzero
+        assert any_heated
 
     def test_sensor_field_does_not_step_world(self, setup):
         """SensorField.step() must not advance the World simulation."""
@@ -518,37 +312,21 @@ class TestSensorFieldIntegration:
         field.step(world)
         assert world.step_count == step_before
 
-    def test_door_change_affects_sensor_readings(self, setup):
-        """Closing a door should change what sensors on the other side read."""
+    def test_urgency_increases_with_heat(self, setup):
+        """Nodes in a heated zone should develop non-zero urgency."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
 
-        # Run with open door, gas flows to right room
-        for _ in range(100):
+        for _ in range(50):
             world.step()
             field.step(world)
 
-        # Find a sensor in the right room (x >= 7)
-        right_sensors = [
-            n for n in field.nodes.values()
-            if n.position[0] >= 7
-        ]
-
-        if right_sensors:
-            reading_open = right_sensors[0].filtered_concentration
-
-            # Close door and run more steps
-            world.close_door("mid_door")
-            for _ in range(200):
-                world.step()
-                field.step(world)
-
-            # Gas in right room should decrease (door closed, no new inflow)
-            reading_closed = right_sensors[0].filtered_concentration
-            # With door closed the concentration should at least not keep growing
-            # (it diffuses within the room but gets no new gas)
-            assert isinstance(reading_closed, float)
+        # At least one node should have urgency > 0
+        any_urgent = any(
+            n.urgency > 0 for n in field.nodes.values()
+        )
+        assert any_urgent
 
     def test_gossip_uses_network_topology(self, setup):
         """Gossip messages should flow only along Network edges."""
@@ -556,7 +334,7 @@ class TestSensorFieldIntegration:
         net = SensorNetwork(env)
         field = SensorField(env, net, gossip_rounds=3, seed=42)
 
-        for _ in range(100):
+        for _ in range(50):
             world.step()
             field.step(world)
 
@@ -582,88 +360,74 @@ class TestSensorFieldIntegration:
         snap = mc.snapshot()
         assert snap["n_records"] == 1
         assert snap["records"][0]["n_nodes"] > 0
-        assert "concentration_rmse" in snap["records"][0]
-
-    def test_all_four_blocks_together(self):
-        """Full integration: World + Renderer + Network + SensorField."""
-        cfg = _write_config(_two_room_config())
-        env = Environment(cfg)
-        world = World(env)
-        renderer = Renderer(env)
-        net = SensorNetwork(env)
-        field = SensorField(env, net, seed=42)
-        mc = MetricsCollector("full_integration")
-
-        # All share the same env
-        assert world.env is renderer.env is net.env is field.env
-
-        # Run simulation
-        for step in range(50):
-            world.step()
-            field.step(world)
-
-        # Collect metrics from all blocks
-        mc.record({"block": "world", **world.metrics()}, step=50)
-        mc.record({"block": "network", **net.metrics()}, step=50)
-        mc.record({"block": "sensor", **field.metrics(world)}, step=50)
-
-        snap = mc.snapshot()
-        assert snap["n_records"] == 3
-
-        # Renderer can still snapshot the current state
-        pl = renderer.snapshot(world, title="Full Integration")
-        assert isinstance(pl, pv.Plotter)
-        pl.close()
+        assert "temperature_rmse" in snap["records"][0]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 10. Actuator integration (Block 5 ↔ Block 1 + Block 4)
+# 7. Actuator integration (Block 5 ↔ Block 1 + Block 4)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestActuatorIntegration:
     def test_actuator_shares_env(self, setup):
+        """DamperController should reference the same Environment."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ac = ActuatorController(env, field, policy="predictive")
-        assert ac.env is env
-        assert ac.sensor_field is field
+        ctrl = DamperController(env, field, policy="edge", seed=42)
+        assert ctrl.env is env
+        assert ctrl.sensor_field is field
 
-    def test_actuator_closes_door_in_world(self, setup):
-        """ActuatorController.evaluate() should close doors via World."""
+    def test_actuator_sets_damper_openings(self, setup):
+        """DamperController.evaluate() should return valid damper openings."""
         env, world, renderer = setup
         net = SensorNetwork(env)
-        field = SensorField(env, net, gossip_rounds=3, seed=42)
-        ac = ActuatorController(
-            env, field, policy="reactive",
-            concentration_threshold=0.01, proximity_radius=5.0,
-        )
-        for _ in range(200):
+        field = SensorField(env, net, seed=42)
+        ctrl = DamperController(env, field, policy="edge", seed=42)
+
+        for _ in range(20):
             world.step()
             field.step(world)
-            ac.evaluate(world)
+            openings = ctrl.evaluate(world)
 
-        if ac.doors_closed > 0:
-            assert env.get_door_state("mid_door") == "closed"
-            # Wall mask should reflect the closure
-            door = env.doors["mid_door"]
-            assert env.walls[door.slices].all()
+        assert "vav_A" in openings
+        assert "vav_B" in openings
+        for v in openings.values():
+            assert 0.0 <= v <= 1.0
 
     def test_actuator_does_not_step_world(self, setup):
+        """DamperController.evaluate() must not advance the World."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ac = ActuatorController(env, field, policy="predictive")
+        ctrl = DamperController(env, field, policy="edge", seed=42)
 
         world.run(10)
         field.step(world)
         step_before = world.step_count
-        ac.evaluate(world)
+        ctrl.evaluate(world)
         assert world.step_count == step_before
+
+    def test_heated_room_gets_more_cooling(self, setup):
+        """Room with active heat source should get higher damper opening."""
+        env, world, renderer = setup
+        net = SensorNetwork(env)
+        field = SensorField(env, net, gossip_rounds=2, seed=42)
+        ctrl = DamperController(env, field, policy="edge", proximity_radius=5.0, seed=42)
+
+        # Heat room_A significantly
+        room_A = env.rooms["room_A"]
+        for _ in range(30):
+            world.T[room_A.slices] += 0.3
+            world.step()
+            field.step(world)
+
+        openings = ctrl.evaluate(world)
+        # Room A (heated) should get more cooling than room B
+        assert openings["vav_A"] >= openings["vav_B"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 11. Simulation integration (Block 6 — full loop)
+# 8. Simulation integration (Block 6 — full loop)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationIntegration:
@@ -677,7 +441,7 @@ class TestSimulationIntegration:
         assert sim.actuator.env is env
 
     def test_simulation_step_order(self):
-        """Each step: world → sensor → actuator, in that order."""
+        """Each step: world -> sensor -> actuator, in that order."""
         cfg = _write_config(_two_room_config())
         sim = Simulation(cfg, seed=42)
 
@@ -692,19 +456,34 @@ class TestSimulationIntegration:
         sim.run(20, record_every=10)
         assert len(sim.collector.records) == 2
         rec = sim.collector.records[-1]
-        assert "total_mass" in rec
-        assert "n_detecting" in rec
-        assert "doors_closed" in rec
+        assert "max_overshoot" in rec
+        assert "cumulative_comfort_violation" in rec
+        assert "cumulative_energy" in rec
+        assert "mean_age_of_information" in rec
 
-    def test_simulation_cumulative_contamination(self):
+    def test_simulation_cumulative_comfort_violation(self):
         cfg = _write_config(_two_room_config())
         sim = Simulation(cfg, seed=42)
         sim.run(50)
-        assert sim.cumulative_contamination > 0
+        assert sim.cumulative_comfort_violation >= 0
+
+    def test_simulation_cumulative_energy(self):
+        cfg = _write_config(_two_room_config())
+        sim = Simulation(cfg, seed=42)
+        sim.run(50)
+        assert sim.cumulative_energy > 0
+
+    def test_simulation_summary(self):
+        cfg = _write_config(_two_room_config())
+        sim = Simulation(cfg, seed=42)
+        sim.run(10)
+        s = sim.summary()
+        assert "Policy" in s
+        assert "overshoot" in s
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 12. Benchmark integration (Block 7 — comparison)
+# 9. Benchmark integration (Block 7 — comparison)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkIntegration:
@@ -712,20 +491,107 @@ class TestBenchmarkIntegration:
         cfg = _write_config(_two_room_config())
         bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
         comparison = bm.run()
-        assert "predictive" in comparison
-        assert "reactive" in comparison
-        assert comparison["predictive"]["cumulative_contamination"] >= 0
-        assert comparison["reactive"]["cumulative_contamination"] >= 0
+        assert "edge" in comparison
+        assert "centralized" in comparison
+        assert comparison["edge"]["cumulative_energy"] >= 0
+        assert comparison["centralized"]["cumulative_energy"] >= 0
+        assert "comparison" in comparison
 
     def test_benchmark_results_independent(self):
         """Each policy run should be independent (separate World instances)."""
         cfg = _write_config(_two_room_config())
         bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
-        pred_sim = bm.run_predictive()
-        react_sim = bm.run_reactive()
+        edge_sim = bm.run_edge()
+        cent_sim = bm.run_centralized()
         # Different World objects
-        assert pred_sim.world is not react_sim.world
-        assert pred_sim.env is not react_sim.env
+        assert edge_sim.world is not cent_sim.world
+        assert edge_sim.env is not cent_sim.env
+
+    def test_benchmark_comparison_metrics(self):
+        cfg = _write_config(_two_room_config())
+        bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
+        result = bm.run()
+        comp = result["comparison"]
+        assert "comfort_improvement_pct" in comp
+        assert "energy_savings_pct" in comp
+        assert "edge_aoi" in comp
+        assert "centralized_aoi" in comp
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 10. Decoupling verification
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDecoupling:
+    def test_renderer_does_not_step_world(self, setup):
+        """Renderer methods should never advance the World."""
+        env, world, renderer = setup
+        assert world.step_count == 0
+
+        pl = renderer.snapshot(world)
+        assert world.step_count == 0
+        pl.close()
+
+    def test_blocks_work_independently(self):
+        """Each block works with only Environment as the shared interface."""
+        cfg = _write_config(_two_room_config())
+
+        # Block 1 only
+        env1 = Environment(cfg)
+        world = World(env1)
+        world.run(50)
+        assert world.T.mean() >= env1.ambient_temperature
+
+        # Block 2 only (separate env instance)
+        env2 = Environment(cfg)
+        renderer = Renderer(env2)
+        assert renderer._wall_mesh.n_points > 0
+
+        # They CAN work together when given the same env
+        renderer_shared = Renderer(env1)
+        pl = renderer_shared.snapshot(world)
+        assert isinstance(pl, pv.Plotter)
+        pl.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 11. Full integration — all blocks together
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestFullIntegration:
+    def test_all_blocks_together(self):
+        """Full integration: World + Renderer + Network + SensorField + Actuator."""
+        cfg = _write_config(_two_room_config())
+        env = Environment(cfg)
+        world = World(env)
+        renderer = Renderer(env)
+        net = SensorNetwork(env)
+        field = SensorField(env, net, seed=42)
+        ctrl = DamperController(env, field, policy="edge", seed=42)
+        mc = MetricsCollector("full_integration")
+
+        # All share the same env
+        assert world.env is renderer.env is net.env is field.env is ctrl.env
+
+        # Run simulation loop
+        for step in range(50):
+            world.step()
+            field.step(world)
+            ctrl.evaluate(world)
+
+        # Collect metrics from all blocks
+        mc.record({"block": "world", **world.metrics()}, step=50)
+        mc.record({"block": "network", **net.metrics()}, step=50)
+        mc.record({"block": "sensor", **field.metrics(world)}, step=50)
+        mc.record({"block": "actuator", **ctrl.metrics()}, step=50)
+
+        snap = mc.snapshot()
+        assert snap["n_records"] == 4
+
+        # Renderer can still snapshot the current state
+        pl = renderer.snapshot(world, title="Full Integration")
+        assert isinstance(pl, pv.Plotter)
+        pl.close()
 
 
 if __name__ == "__main__":

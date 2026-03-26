@@ -1,16 +1,11 @@
 {
-    "environment": "configs/environments/default_maze.json",
+    "environment": "configs/environments/hvac_office.json",
     "n_steps": 500,
     "record_every": 10,
-    "predictive": {
-        "horizon": 5.0,
-        "gossip_rounds": 2
-    },
-    "reactive": {
-        "threshold": 0.5
-    },
-    "proximity_radius": 3.0,
-    "detection_threshold": 0.01,
+    "gossip_rounds": 2,
+    "proximity_radius": 5.0,
+    "talk_threshold": 0.01,
+    "buffer_seconds": 30.0,
     "seed": 42,
     "output_dir": "results/benchmark"
 }

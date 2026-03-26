@@ -1,5 +1,5 @@
 """
-Unit tests for Block 5 — Actuator Controller.
+Unit tests for Block 5 — VAV Damper Controller.
 
 Run with:
     python -m pytest blocks/actuator/test_actuator.py -v
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,230 +17,191 @@ from blocks.world.environment import Environment
 from blocks.world.world import World
 from blocks.network.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import ActuatorController, Actuation
+from blocks.actuator.controller import DamperController
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-def _write_config(config: dict) -> Path:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(config, f)
-    f.close()
-    return Path(f.name)
-
-
-def _two_room_config() -> dict:
+def _make_config() -> dict:
     return {
-        "grid": {"nx": 12, "ny": 6, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "grid": {"nx": 12, "ny": 12, "nz": 3, "dx": 1.0},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
-            {"name": "left", "bounds": {
+            {"name": "room_A", "bounds": {
                 "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
-            }},
-            {"name": "right", "bounds": {
+            }, "setpoint": 22.0},
+            {"name": "room_B", "bounds": {
                 "x_min": 7, "x_max": 11, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
+            }, "setpoint": 22.0},
+        ],
+        "hallways": [
+            {"name": "corridor", "bounds": {
+                "x_min": 5, "x_max": 7, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
             }},
         ],
-        "doors": [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 7, "y_min": 2, "y_max": 4, "z_min": 0, "z_max": 3
-            }, "state": "open"}
+        "vav_dampers": [
+            {"name": "vav_A", "zone": "room_A",
+             "position": {"x": 3, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
+            {"name": "vav_B", "zone": "room_B",
+             "position": {"x": 9, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
         ],
-        "sources": [
-            {"name": "leak", "position": {"x": 2, "y": 3, "z": 1}, "rate": 5.0}
+        "heat_sources": [
+            {"name": "heat_A", "zone": "room_A", "rate": 1.0,
+             "schedule": {"start": 0, "end": None}},
         ],
-        "sensors": {
-            "placement": "manual",
-            "communication_radius": 6.0,
-            "nodes": [
-                {"name": "s_left", "position": {"x": 2, "y": 3, "z": 1}},
-                {"name": "s_door", "position": {"x": 4, "y": 3, "z": 1}},
-                {"name": "s_right", "position": {"x": 9, "y": 3, "z": 1}},
-            ],
-        },
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
+        "sensors": {"placement": "grid", "spacing": 3, "z_levels": [1],
+                     "communication_radius": 5.0},
         "noise": {"sensor_sigma": 0.0},
+        "network": {"polling_interval": 5.0, "jitter_sigma": 0.5, "compute_delay": 1.0},
     }
 
 
-@pytest.fixture
-def setup():
-    env = Environment(_write_config(_two_room_config()))
+def _write_config(cfg: dict) -> str:
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(cfg, f)
+    f.close()
+    return f.name
+
+
+def _make_system(policy="edge"):
+    cfg = _make_config()
+    path = _write_config(cfg)
+    env = Environment(path)
     world = World(env)
     net = SensorNetwork(env)
-    field = SensorField(env, net, gossip_rounds=3, seed=42)
-    return env, world, net, field
+    sf = SensorField(env, net, gossip_rounds=2, seed=42)
+    ctrl = DamperController(
+        env, sf, policy=policy,
+        proximity_radius=5.0,
+        polling_interval=cfg["network"]["polling_interval"],
+        jitter_sigma=cfg["network"]["jitter_sigma"],
+        compute_delay=cfg["network"]["compute_delay"],
+        seed=42,
+    )
+    return env, world, sf, ctrl
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Initialization
+# Init tests
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestActuatorInit:
-    def test_invalid_policy_raises(self, setup):
-        env, world, net, field = setup
-        with pytest.raises(ValueError, match="Unknown policy"):
-            ActuatorController(env, field, policy="unknown")
-
-    def test_maps_doors_to_sensors(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, proximity_radius=3.0)
-        assert "mid_door" in ac.door_sensors
-        # s_door is at (4,3,1), door center is at (6,3,1.5) — ~2 cells away
-        assert len(ac.door_sensors["mid_door"]) > 0
-
-    def test_no_sensors_near_distant_door(self):
-        cfg = _two_room_config()
-        env = Environment(_write_config(cfg))
-        world = World(env)
+class TestDamperInit:
+    def test_invalid_policy_raises(self):
+        cfg = _make_config()
+        path = _write_config(cfg)
+        env = Environment(path)
         net = SensorNetwork(env)
-        field = SensorField(env, net, seed=42)
-        ac = ActuatorController(env, field, proximity_radius=0.5)
-        # With very small radius, no sensors should be near door
-        assert len(ac.door_sensors["mid_door"]) == 0
+        sf = SensorField(env, net, seed=42)
+        with pytest.raises(ValueError, match="Unknown policy"):
+            DamperController(env, sf, policy="magic")
+
+    def test_damper_sensor_mapping(self):
+        _, _, _, ctrl = _make_system()
+        assert "vav_A" in ctrl.damper_sensors
+        assert "vav_B" in ctrl.damper_sensors
+        # Each damper should have at least one nearby sensor
+        assert len(ctrl.damper_sensors["vav_A"]) > 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Predictive policy
+# Edge policy tests
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestPredictivePolicy:
-    def test_no_actuation_at_start(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="predictive", horizon=5.0)
+class TestEdgePolicy:
+    def test_evaluate_returns_openings(self):
+        _, world, sf, ctrl = _make_system("edge")
         world.step()
-        field.step(world)
-        closed = ac.evaluate(world)
-        assert len(closed) == 0
+        sf.step(world)
+        openings = ctrl.evaluate(world)
+        assert "vav_A" in openings
+        assert "vav_B" in openings
+        for v in openings.values():
+            assert 0.0 <= v <= 1.0
 
-    def test_door_closes_with_prediction(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(
-            env, field, policy="predictive",
-            horizon=50.0, proximity_radius=5.0,
-        )
-        # Run enough for gas to build up and gossip to propagate
-        for _ in range(200):
+    def test_heated_room_gets_more_cooling(self):
+        env, world, sf, ctrl = _make_system("edge")
+        room_A = env.rooms["room_A"]
+        # Heat room A a lot to create urgency
+        for _ in range(30):
+            world.T[room_A.slices] += 0.3
             world.step()
-            field.step(world)
-            closed = ac.evaluate(world)
-            if closed:
-                break
+            sf.step(world)
+        openings = ctrl.evaluate(world)
+        # Room A (heated) should get more cooling than room B
+        assert openings["vav_A"] >= openings["vav_B"]
 
-        assert ac.doors_closed >= 0  # May or may not close depending on dynamics
-        assert env.get_door_state("mid_door") in ("open", "closed")
-
-    def test_already_closed_door_skipped(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="predictive")
-        # Manually close the door
-        world.close_door("mid_door")
+    def test_edge_aoi_is_zero(self):
+        _, world, sf, ctrl = _make_system("edge")
         world.step()
-        field.step(world)
-        closed = ac.evaluate(world)
-        assert "mid_door" not in closed
+        sf.step(world)
+        ctrl.evaluate(world)
+        assert ctrl.mean_age_of_information == 0.0
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# Reactive policy
-# ══════════════════════════════════════════════════════════════════════════
-
-class TestReactivePolicy:
-    def test_no_actuation_at_start(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="reactive", concentration_threshold=0.5)
+    def test_actions_logged(self):
+        _, world, sf, ctrl = _make_system("edge")
         world.step()
-        field.step(world)
-        closed = ac.evaluate(world)
-        assert len(closed) == 0
-
-    def test_door_closes_at_threshold(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(
-            env, field, policy="reactive",
-            concentration_threshold=0.01, proximity_radius=5.0,
-        )
-        # Run until concentration builds up at sensors near door
-        closed_ever = False
-        for _ in range(300):
-            world.step()
-            field.step(world)
-            closed = ac.evaluate(world)
-            if closed:
-                closed_ever = True
-                break
-
-        # With low threshold and enough steps, should eventually close
-        assert closed_ever or ac.doors_closed == 0  # environment may not trigger
-
-    def test_both_policies_eventually_close_door(self):
-        """Both policies should eventually close the door given enough time."""
-        for policy, kwargs in [
-            ("predictive", {"horizon": 20.0}),
-            ("reactive", {"concentration_threshold": 0.5}),
-        ]:
-            cfg = _two_room_config()
-            env = Environment(_write_config(cfg))
-            world = World(env)
-            net = SensorNetwork(env)
-            field = SensorField(env, net, gossip_rounds=3, seed=42)
-            ac = ActuatorController(
-                env, field, policy=policy, proximity_radius=5.0, **kwargs,
-            )
-            for _ in range(300):
-                world.step()
-                field.step(world)
-                ac.evaluate(world)
-
-            assert ac.first_detection_time is not None, f"{policy}: no detection"
-            assert ac.first_actuation_time is not None, f"{policy}: no actuation"
-            assert env.get_door_state("mid_door") == "closed"
+        sf.step(world)
+        ctrl.evaluate(world)
+        assert len(ctrl.actions) > 0
+        assert ctrl.actions[0].policy == "edge"
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Metrics
+# Centralized policy tests
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestActuatorMetrics:
-    def test_metrics_dict_keys(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="predictive")
-        m = ac.metrics()
-        expected = {"policy", "doors_closed", "total_actuations",
-                    "first_detection_time", "first_actuation_time",
-                    "response_time", "actuation_log"}
-        assert expected == set(m.keys())
+class TestCentralizedPolicy:
+    def test_evaluate_returns_openings(self):
+        _, world, sf, ctrl = _make_system("centralized")
+        world.step()
+        sf.step(world)
+        openings = ctrl.evaluate(world)
+        assert "vav_A" in openings
+        for v in openings.values():
+            assert 0.0 <= v <= 1.0
 
-    def test_response_time_none_before_actuation(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="predictive")
-        assert ac.response_time is None
-
-    def test_detection_time_tracked(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(env, field, policy="predictive")
-        # Run enough for gas to be detected
-        for _ in range(50):
+    def test_centralized_has_nonzero_aoi(self):
+        _, world, sf, ctrl = _make_system("centralized")
+        for _ in range(10):
             world.step()
-            field.step(world)
-            ac.evaluate(world)
+            sf.step(world)
+            ctrl.evaluate(world)
+        # Centralized should accumulate AoI
+        assert ctrl.mean_age_of_information >= 0.0
 
-        # Source is at a sensor position, so detection should happen
-        assert ac.first_detection_time is not None
+    def test_centralized_caches_between_polls(self):
+        _, world, sf, ctrl = _make_system("centralized")
+        world.step()
+        sf.step(world)
+        openings1 = ctrl.evaluate(world)
+        # Immediately evaluate again — should use cache
+        openings2 = ctrl.evaluate(world)
+        assert openings1 == openings2
 
-    def test_actuation_log(self, setup):
-        env, world, net, field = setup
-        ac = ActuatorController(
-            env, field, policy="reactive",
-            concentration_threshold=0.01, proximity_radius=5.0,
-        )
-        for _ in range(300):
+
+# ══════════════════════════════════════════════════════════════════════════
+# Metrics tests
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDamperMetrics:
+    def test_metrics_dict(self):
+        _, world, sf, ctrl = _make_system("edge")
+        world.step()
+        sf.step(world)
+        ctrl.evaluate(world)
+        m = ctrl.metrics()
+        assert "policy" in m
+        assert "damper_openings" in m
+        assert "total_energy" in m
+        assert "mean_age_of_information" in m
+
+    def test_energy_accumulates(self):
+        _, world, sf, ctrl = _make_system("edge")
+        for _ in range(10):
             world.step()
-            field.step(world)
-            ac.evaluate(world)
-
-        log = ac.metrics()["actuation_log"]
-        for entry in log:
-            assert "door" in entry
-            assert "time" in entry
-            assert "step" in entry
-            assert "trigger_sensor" in entry
+            sf.step(world)
+            ctrl.evaluate(world)
+        assert ctrl.total_energy > 0

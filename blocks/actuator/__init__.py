@@ -1,3 +1,3 @@
-from .controller import ActuatorController
+from .controller import DamperController
 
-__all__ = ["ActuatorController"]
+__all__ = ["DamperController"]

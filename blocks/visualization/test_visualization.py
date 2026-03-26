@@ -1,7 +1,7 @@
 """
-Unit tests for Block 2 — 3D Visualization.
+Unit tests for Block 2 — 3D Visualization (HVAC).
 
-These tests verify mesh construction and rendering logic without
+Tests verify mesh construction and rendering logic without
 displaying windows (uses off-screen rendering).
 
 Run with:
@@ -35,20 +35,22 @@ def _write_config(config: dict) -> Path:
 def _test_config() -> dict:
     return {
         "grid": {"nx": 10, "ny": 10, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
-            {"name": "room", "bounds": {
+            {"name": "room_A", "bounds": {
                 "x_min": 1, "x_max": 9, "y_min": 1, "y_max": 9, "z_min": 0, "z_max": 3
-            }}
+            }, "setpoint": 22.0}
         ],
-        "doors": [
-            {"name": "test_door", "bounds": {
-                "x_min": 0, "x_max": 1, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 2
-            }, "state": "open"}
+        "vav_dampers": [
+            {"name": "vav_A", "zone": "room_A",
+             "position": {"x": 5, "y": 5, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5}
         ],
-        "sources": [
-            {"name": "src", "position": {"x": 5, "y": 5, "z": 1}, "rate": 5.0}
+        "heat_sources": [
+            {"name": "heat_A", "zone": "room_A", "rate": 0.3,
+             "schedule": {"start": 0, "end": None}}
         ],
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
     }
 
 
@@ -70,17 +72,10 @@ class TestRendererConstruction:
         renderer = Renderer(env)
         assert renderer._wall_mesh.n_points > 0
 
-    def test_creates_door_meshes(self, env_and_world):
+    def test_creates_damper_markers(self, env_and_world):
         env, _ = env_and_world
         renderer = Renderer(env)
-        assert "test_door" in renderer._door_meshes
-        assert renderer._door_meshes["test_door"].n_points > 0
-
-    def test_creates_source_markers(self, env_and_world):
-        env, world = env_and_world
-        renderer = Renderer(env)
-        markers = renderer._build_source_markers()
-        assert markers.n_points > 0
+        assert renderer._damper_markers.n_points > 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -91,26 +86,26 @@ class TestVolumeConstruction:
     def test_volume_shape(self, env_and_world):
         env, world = env_and_world
         renderer = Renderer(env)
-        vol = renderer._build_concentration_volume(world.get_concentration())
+        vol = renderer._build_temperature_volume(world.T)
         assert isinstance(vol, pv.ImageData)
-        # Dimensions are shape + 1 (cell vs point data)
         assert vol.dimensions == (11, 11, 4)
 
-    def test_volume_data_matches_phi(self, env_and_world):
+    def test_volume_data_matches_T(self, env_and_world):
         env, world = env_and_world
-        world.phi[5, 5, 1] = 42.0
+        world.T[5, 5, 1] = 42.0
         renderer = Renderer(env)
-        vol = renderer._build_concentration_volume(world.get_concentration())
-        data = vol.cell_data["concentration"]
+        vol = renderer._build_temperature_volume(world.T)
+        data = vol.cell_data["temperature"]
         assert 42.0 in data
 
     def test_volume_after_stepping(self, env_and_world):
         env, world = env_and_world
         world.run(10)
         renderer = Renderer(env)
-        vol = renderer._build_concentration_volume(world.get_concentration())
-        data = vol.cell_data["concentration"]
-        assert np.max(data) > 0
+        vol = renderer._build_temperature_volume(world.T)
+        data = vol.cell_data["temperature"]
+        # After stepping with heat source, max should exceed ambient
+        assert np.max(data) >= 20.0
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -122,19 +117,18 @@ class TestOffScreenRendering:
         env, world = env_and_world
         world.run(5)
         renderer = Renderer(env)
-        # Use off-screen to avoid opening a window
         pv.OFF_SCREEN = True
         pl = renderer.snapshot(world, title="Test")
         assert isinstance(pl, pv.Plotter)
         pl.close()
 
-    def test_snapshot_with_closed_door(self, env_and_world):
+    def test_snapshot_with_hot_zone(self, env_and_world):
         env, world = env_and_world
-        world.close_door("test_door")
-        world.run(5)
+        room = env.rooms["room_A"]
+        world.T[room.slices] = 30.0
         renderer = Renderer(env)
         pv.OFF_SCREEN = True
-        pl = renderer.snapshot(world, title="Door Closed")
+        pl = renderer.snapshot(world, title="Hot Zone")
         assert isinstance(pl, pv.Plotter)
         pl.close()
 

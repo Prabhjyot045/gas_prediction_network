@@ -1,5 +1,5 @@
 """
-Unit tests for Block 6 — Simulation.
+Unit tests for Block 6 — Full HVAC Simulation.
 
 Run with:
     python -m pytest blocks/simulation/test_simulation.py -v
@@ -9,167 +9,145 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
 
-import numpy as np
 import pytest
 
 from blocks.simulation.simulation import Simulation
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-def _write_config(config: dict) -> Path:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(config, f)
-    f.close()
-    return Path(f.name)
-
-
-def _two_room_config() -> dict:
+def _make_config() -> dict:
     return {
-        "grid": {"nx": 12, "ny": 6, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "grid": {"nx": 12, "ny": 12, "nz": 3, "dx": 1.0},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
-            {"name": "left", "bounds": {
+            {"name": "room_A", "bounds": {
                 "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
-            }},
-            {"name": "right", "bounds": {
+            }, "setpoint": 22.0},
+            {"name": "room_B", "bounds": {
                 "x_min": 7, "x_max": 11, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
+            }, "setpoint": 22.0},
+        ],
+        "hallways": [
+            {"name": "corridor", "bounds": {
+                "x_min": 5, "x_max": 7, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
             }},
         ],
-        "doors": [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 7, "y_min": 2, "y_max": 4, "z_min": 0, "z_max": 3
-            }, "state": "open"}
+        "vav_dampers": [
+            {"name": "vav_A", "zone": "room_A",
+             "position": {"x": 3, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
         ],
-        "sources": [
-            {"name": "leak", "position": {"x": 2, "y": 3, "z": 1}, "rate": 5.0}
+        "heat_sources": [
+            {"name": "heat_A", "zone": "room_A", "rate": 0.5,
+             "schedule": {"start": 0, "end": None}},
         ],
-        "sensors": {
-            "placement": "manual",
-            "communication_radius": 6.0,
-            "nodes": [
-                {"name": "s_left", "position": {"x": 2, "y": 3, "z": 1}},
-                {"name": "s_door", "position": {"x": 4, "y": 3, "z": 1}},
-                {"name": "s_right", "position": {"x": 9, "y": 3, "z": 1}},
-            ],
-        },
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
+        "sensors": {"placement": "grid", "spacing": 3, "z_levels": [1],
+                     "communication_radius": 5.0},
         "noise": {"sensor_sigma": 0.0},
+        "network": {"polling_interval": 5.0, "jitter_sigma": 0.5, "compute_delay": 1.0},
     }
 
 
-@pytest.fixture
-def env_path():
-    return _write_config(_two_room_config())
+def _write_config(cfg: dict) -> str:
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(cfg, f)
+    f.close()
+    return f.name
+
+
+def _make_sim(policy="edge") -> Simulation:
+    path = _write_config(_make_config())
+    return Simulation(path, actuator_policy=policy, seed=42)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Initialization
+# Init tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationInit:
-    def test_creates_all_blocks(self, env_path):
-        sim = Simulation(env_path, seed=42)
+    def test_creates_all_blocks(self):
+        sim = _make_sim()
         assert sim.world is not None
-        assert sim.network is not None
         assert sim.sensor_field is not None
         assert sim.actuator is not None
         assert sim.collector is not None
 
-    def test_shared_environment(self, env_path):
-        sim = Simulation(env_path, seed=42)
+    def test_shared_env(self):
+        sim = _make_sim()
         assert sim.world.env is sim.env
         assert sim.sensor_field.env is sim.env
         assert sim.actuator.env is sim.env
-        assert sim.network.env is sim.env
-
-    def test_predictive_policy(self, env_path):
-        sim = Simulation(env_path, actuator_policy="predictive", seed=42)
-        assert sim.actuator.policy == "predictive"
-
-    def test_reactive_policy(self, env_path):
-        sim = Simulation(env_path, actuator_policy="reactive", seed=42)
-        assert sim.actuator.policy == "reactive"
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Running
+# Run tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationRun:
-    def test_step_advances_world(self, env_path):
-        sim = Simulation(env_path, seed=42)
+    def test_step_advances_time(self):
+        sim = _make_sim()
         sim.step()
         assert sim.world.step_count == 1
         assert sim.world.time > 0
 
-    def test_run_n_steps(self, env_path):
-        sim = Simulation(env_path, seed=42)
-        sim.run(50, record_every=10)
-        assert sim.world.step_count == 50
-
-    def test_records_metrics(self, env_path):
-        sim = Simulation(env_path, seed=42)
-        sim.run(50, record_every=10)
-        # Should have 5 records (steps 10, 20, 30, 40, 50)
-        assert len(sim.collector.records) == 5
-
-    def test_callback_called(self, env_path):
-        sim = Simulation(env_path, seed=42)
-        calls = []
-        sim.run(10, record_every=5, step_callback=lambda s, i: calls.append(i))
-        assert len(calls) == 10
-
-    def test_cumulative_contamination_increases(self, env_path):
-        sim = Simulation(env_path, seed=42)
-        sim.run(100, record_every=100)
-        assert sim.cumulative_contamination > 0
-
-    def test_collector_has_scalars(self, env_path):
-        sim = Simulation(env_path, seed=42)
+    def test_run_multiple_steps(self):
+        sim = _make_sim()
         sim.run(20, record_every=5)
-        steps, mass = sim.collector.scalar_series("total_mass")
-        assert len(steps) == 4
-        assert all(m >= 0 for m in mass)
+        assert sim.world.step_count == 20
+
+    def test_comfort_violation_accumulates(self):
+        sim = _make_sim()
+        sim.run(50)
+        # With heat source and cooling, should have some comfort metric
+        assert sim.cumulative_comfort_violation >= 0
+
+    def test_energy_accumulates(self):
+        sim = _make_sim()
+        sim.run(20)
+        assert sim.cumulative_energy > 0
+
+    def test_step_callback(self):
+        sim = _make_sim()
+        called = []
+        sim.run(5, step_callback=lambda s, i: called.append(i))
+        assert len(called) == 5
+
+    def test_centralized_policy_runs(self):
+        sim = _make_sim("centralized")
+        sim.run(20)
+        assert sim.world.step_count == 20
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Metadata and output
+# Output tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationOutput:
-    def test_summary(self, env_path):
-        sim = Simulation(env_path, seed=42)
-        sim.run(10)
-        s = sim.summary()
-        assert "10 steps" in s
-        assert "Policy" in s
-
-    def test_metadata(self, env_path):
-        sim = Simulation(env_path, actuator_policy="predictive", seed=42)
-        snap = sim.collector.snapshot()
-        assert snap["metadata"]["policy"] == "predictive"
-        assert snap["metadata"]["seed"] == 42
-
-    def test_save_json(self, env_path, tmp_path):
-        sim = Simulation(env_path, seed=42)
+    def test_collector_has_records(self):
+        sim = _make_sim()
         sim.run(10, record_every=5)
-        path = sim.collector.save_json(tmp_path / "test.json")
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert data["n_records"] == 2
+        assert len(sim.collector.records) >= 2
 
-    def test_from_config(self, env_path, tmp_path):
-        sim_cfg = {
-            "environment": str(env_path),
-            "actuator": {"policy": "reactive", "concentration_threshold": 0.3},
-            "sensor_field": {"gossip_rounds": 2},
-            "simulation": {"seed": 99, "name": "test_run"},
-        }
-        cfg_path = tmp_path / "sim_config.json"
-        cfg_path.write_text(json.dumps(sim_cfg))
+    def test_records_contain_expected_keys(self):
+        sim = _make_sim()
+        sim.run(10, record_every=10)
+        rec = sim.collector.records[-1]
+        assert "max_overshoot" in rec
+        assert "cumulative_comfort_violation" in rec
+        assert "cumulative_energy" in rec
 
-        sim = Simulation.from_config(cfg_path)
-        assert sim.actuator.policy == "reactive"
-        assert sim.actuator.concentration_threshold == 0.3
+    def test_scalar_series_recorded(self):
+        sim = _make_sim()
+        sim.run(10, record_every=5)
+        steps, values = sim.collector.scalar_series("max_overshoot")
+        assert len(steps) >= 2
+
+    def test_summary_string(self):
+        sim = _make_sim()
+        sim.run(5)
+        s = sim.summary()
+        assert "Policy" in s
+        assert "overshoot" in s

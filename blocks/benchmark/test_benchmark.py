@@ -1,5 +1,5 @@
 """
-Unit tests for Block 7 — Benchmark.
+Unit tests for Block 7 — Benchmark (Edge vs Centralized).
 
 Run with:
     python -m pytest blocks/benchmark/test_benchmark.py -v
@@ -9,153 +9,132 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from blocks.benchmark.benchmark import Benchmark
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-def _write_config(config: dict) -> Path:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(config, f)
-    f.close()
-    return Path(f.name)
-
-
-def _two_room_config() -> dict:
+def _make_config() -> dict:
     return {
-        "grid": {"nx": 12, "ny": 6, "nz": 3, "dx": 1.0},
-        "physics": {"diffusion_coefficient": 0.05},
+        "grid": {"nx": 12, "ny": 12, "nz": 3, "dx": 1.0},
+        "physics": {"thermal_diffusivity": 0.02, "ambient_temperature": 20.0},
         "rooms": [
-            {"name": "left", "bounds": {
+            {"name": "room_A", "bounds": {
                 "x_min": 1, "x_max": 5, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
-            }},
-            {"name": "right", "bounds": {
+            }, "setpoint": 22.0},
+            {"name": "room_B", "bounds": {
                 "x_min": 7, "x_max": 11, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
+            }, "setpoint": 22.0},
+        ],
+        "hallways": [
+            {"name": "corridor", "bounds": {
+                "x_min": 5, "x_max": 7, "y_min": 1, "y_max": 5, "z_min": 0, "z_max": 3
             }},
         ],
-        "doors": [
-            {"name": "mid_door", "bounds": {
-                "x_min": 5, "x_max": 7, "y_min": 2, "y_max": 4, "z_min": 0, "z_max": 3
-            }, "state": "open"}
+        "vav_dampers": [
+            {"name": "vav_A", "zone": "room_A",
+             "position": {"x": 3, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
+            {"name": "vav_B", "zone": "room_B",
+             "position": {"x": 9, "y": 3, "z": 1},
+             "max_flow": 1.0, "initial_opening": 0.5},
         ],
-        "sources": [
-            {"name": "leak", "position": {"x": 2, "y": 3, "z": 1}, "rate": 5.0}
+        "heat_sources": [
+            {"name": "heat_A", "zone": "room_A", "rate": 0.5,
+             "schedule": {"start": 0, "end": None}},
         ],
-        "sensors": {
-            "placement": "manual",
-            "communication_radius": 6.0,
-            "nodes": [
-                {"name": "s_left", "position": {"x": 2, "y": 3, "z": 1}},
-                {"name": "s_door", "position": {"x": 4, "y": 3, "z": 1}},
-                {"name": "s_right", "position": {"x": 9, "y": 3, "z": 1}},
-            ],
-        },
+        "cooling_plant": {"Q_total": 5.0, "supply_temperature": 12.0},
+        "sensors": {"placement": "grid", "spacing": 3, "z_levels": [1],
+                     "communication_radius": 5.0},
         "noise": {"sensor_sigma": 0.0},
+        "network": {"polling_interval": 5.0, "jitter_sigma": 0.5, "compute_delay": 1.0},
     }
 
 
-@pytest.fixture
-def env_path():
-    return _write_config(_two_room_config())
+def _write_config(cfg: dict) -> str:
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(cfg, f)
+    f.close()
+    return f.name
+
+
+def _make_benchmark(n_steps=50) -> Benchmark:
+    path = _write_config(_make_config())
+    return Benchmark(path, n_steps=n_steps, record_every=10, seed=42)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Benchmark execution
+# Run tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkRun:
-    def test_run_predictive(self, env_path):
-        bm = Benchmark(env_path, n_steps=50, record_every=10, seed=42)
-        sim = bm.run_predictive()
-        assert sim.world.step_count == 50
-        assert bm.predictive_result is not None
+    def test_run_completes(self):
+        b = _make_benchmark()
+        result = b.run()
+        assert "edge" in result
+        assert "centralized" in result
+        assert "comparison" in result
 
-    def test_run_reactive(self, env_path):
-        bm = Benchmark(env_path, n_steps=50, record_every=10, seed=42)
-        sim = bm.run_reactive()
-        assert sim.world.step_count == 50
-        assert bm.reactive_result is not None
+    def test_both_policies_produce_metrics(self):
+        b = _make_benchmark()
+        result = b.run()
+        assert result["edge"]["cumulative_energy"] > 0
+        assert result["centralized"]["cumulative_energy"] > 0
 
-    def test_run_both(self, env_path):
-        bm = Benchmark(env_path, n_steps=50, record_every=10, seed=42)
-        comparison = bm.run()
-        assert "predictive" in comparison
-        assert "reactive" in comparison
-        assert "comparison" in comparison
+    def test_independent_worlds(self):
+        b = _make_benchmark()
+        edge_sim = b.run_edge()
+        cent_sim = b.run_centralized()
+        # Different world instances
+        assert edge_sim.world is not cent_sim.world
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Comparison results
+# Comparison tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkComparison:
-    def test_comparison_keys(self, env_path):
-        bm = Benchmark(env_path, n_steps=100, record_every=20, seed=42)
-        comparison = bm.run()
+    def test_comparison_has_metrics(self):
+        b = _make_benchmark()
+        result = b.run()
+        comp = result["comparison"]
+        assert "comfort_improvement_pct" in comp
+        assert "energy_savings_pct" in comp
+        assert "edge_aoi" in comp
+        assert "centralized_aoi" in comp
 
-        pred = comparison["predictive"]
-        expected_pred = {
-            "cumulative_contamination", "response_time",
-            "first_detection_time", "first_actuation_time",
-            "doors_closed", "total_mass_final",
-            "peak_concentration", "contaminated_volume",
-        }
-        assert expected_pred == set(pred.keys())
-
-        comp = comparison["comparison"]
-        assert "contamination_reduction_pct" in comp
-
-    def test_contamination_is_positive(self, env_path):
-        bm = Benchmark(env_path, n_steps=100, record_every=100, seed=42)
-        comparison = bm.run()
-        assert comparison["predictive"]["cumulative_contamination"] >= 0
-        assert comparison["reactive"]["cumulative_contamination"] >= 0
-
-    def test_both_detect_gas(self, env_path):
-        bm = Benchmark(env_path, n_steps=100, record_every=100, seed=42)
-        comparison = bm.run()
-        # Gas source is at sensor position, so both should detect
-        assert comparison["predictive"]["first_detection_time"] is not None
-        assert comparison["reactive"]["first_detection_time"] is not None
+    def test_edge_has_zero_aoi(self):
+        b = _make_benchmark()
+        result = b.run()
+        assert result["edge"]["mean_aoi"] == 0.0
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# I/O
+# I/O tests
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkIO:
-    def test_save_results(self, env_path, tmp_path):
-        bm = Benchmark(
-            env_path, n_steps=50, record_every=10,
-            seed=42, output_dir=tmp_path / "bench_out",
-        )
-        bm.run()
+    def test_save_results(self, tmp_path):
+        b = _make_benchmark()
+        b.output_dir = tmp_path / "results"
+        b.run()
+        assert (tmp_path / "results" / "comparison.json").exists()
+        assert (tmp_path / "results" / "edge_metrics.json").exists()
+        assert (tmp_path / "results" / "centralized_metrics.json").exists()
 
-        assert (tmp_path / "bench_out" / "comparison.json").exists()
-        assert (tmp_path / "bench_out" / "predictive_metrics.json").exists()
-        assert (tmp_path / "bench_out" / "reactive_metrics.json").exists()
-
-        data = json.loads((tmp_path / "bench_out" / "comparison.json").read_text())
-        assert "predictive" in data
-
-    def test_from_config(self, env_path, tmp_path):
+    def test_from_config(self):
         bench_cfg = {
-            "environment": str(env_path),
-            "n_steps": 30,
+            "environment": _write_config(_make_config()),
+            "n_steps": 20,
             "record_every": 10,
-            "predictive": {"horizon": 3.0, "gossip_rounds": 2},
-            "reactive": {"threshold": 0.3},
-            "seed": 99,
+            "seed": 42,
         }
-        cfg_path = tmp_path / "bench_config.json"
-        cfg_path.write_text(json.dumps(bench_cfg))
-
-        bm = Benchmark.from_config(cfg_path)
-        assert bm.n_steps == 30
-        assert bm.predictive_horizon == 3.0
-        assert bm.reactive_threshold == 0.3
-        assert bm.seed == 99
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(bench_cfg, f)
+        f.close()
+        b = Benchmark.from_config(f.name)
+        result = b.run()
+        assert "comparison" in result

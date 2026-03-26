@@ -1,28 +1,80 @@
 """
-SensorNode — individual sensor node with Kalman filter and gossip participation.
+SensorNode — individual edge inference node with rolling buffer and TTI.
 
 Each sensor node:
-1. Reads concentration from the world at its grid position
+1. Reads temperature from the world at its grid position
 2. Applies Gaussian noise to simulate imperfect sensing
-3. Runs a Kalman filter to smooth readings and estimate dφ/dt
-4. Computes spatial gradient from neighboring cells
-5. Estimates flow velocity of the gas front
-6. Generates and processes gossip messages for distributed prediction
+3. Maintains a 30-second rolling buffer for local trend analysis
+4. Computes dT/dt via least-squares fit on the buffer
+5. Computes Time-To-Impact (TTI): time until setpoint breach
+6. Computes spatial gradient for flow direction inference
+7. Generates and processes negotiation messages for distributed consensus
 """
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 import numpy as np
-from filterpy.kalman import KalmanFilter
-from filterpy.common import Q_discrete_white_noise
 
-from .gossip import GossipMessage
+from .gossip import NegotiationMessage
+
+
+class RollingBuffer:
+    """Fixed-size circular buffer storing (timestamp, value) pairs.
+
+    Supports least-squares slope estimation for computing dT/dt.
+    """
+
+    def __init__(self, max_samples: int):
+        self.max_samples = max(2, max_samples)
+        self._times: deque[float] = deque(maxlen=self.max_samples)
+        self._values: deque[float] = deque(maxlen=self.max_samples)
+
+    def append(self, t: float, value: float) -> None:
+        self._times.append(t)
+        self._values.append(value)
+
+    @property
+    def size(self) -> int:
+        return len(self._times)
+
+    @property
+    def is_full(self) -> bool:
+        return self.size >= self.max_samples
+
+    def slope(self) -> float:
+        """Compute dT/dt via least-squares linear fit.
+
+        Returns 0.0 if fewer than 2 samples.
+        """
+        n = self.size
+        if n < 2:
+            return 0.0
+
+        times = np.array(self._times)
+        values = np.array(self._values)
+
+        # Least squares: slope = Σ(t-t̄)(v-v̄) / Σ(t-t̄)²
+        t_mean = np.mean(times)
+        v_mean = np.mean(values)
+        dt = times - t_mean
+        dv = values - v_mean
+        denom = np.dot(dt, dt)
+        if denom < 1e-15:
+            return 0.0
+        return float(np.dot(dt, dv) / denom)
+
+    @property
+    def latest_value(self) -> float:
+        if not self._values:
+            return 0.0
+        return self._values[-1]
 
 
 class SensorNode:
-    """A single sensor node in the VDPA network."""
+    """A single edge inference node in the Aether-Edge network."""
 
     def __init__(
         self,
@@ -30,36 +82,31 @@ class SensorNode:
         position: tuple[int, int, int],
         dx: float,
         dt: float,
+        setpoint: float = 22.0,
+        buffer_seconds: float = 30.0,
         sensor_sigma: float = 0.0,
-        process_noise_var: float = 0.01,
         rng: np.random.Generator | None = None,
     ):
         self.name = name
         self.position = position
         self.dx = dx
         self.dt = dt
+        self.setpoint = setpoint
         self.sensor_sigma = sensor_sigma
 
-        # ── Kalman filter ──
-        # State: [concentration, d(concentration)/dt]
-        self.kf = KalmanFilter(dim_x=2, dim_z=1)
-        self.kf.x = np.array([0.0, 0.0])
-        self.kf.F = np.array([[1.0, dt], [0.0, 1.0]])
-        self.kf.H = np.array([[1.0, 0.0]])
-        self.kf.R = np.array([[max(sensor_sigma ** 2, 1e-10)]])
-        self.kf.Q = Q_discrete_white_noise(dim=2, dt=dt, var=process_noise_var)
-        self.kf.P *= 10.0
+        # ── Rolling buffer ──
+        max_samples = max(2, int(buffer_seconds / dt))
+        self.buffer = RollingBuffer(max_samples)
 
         # ── Local state ──
         self.raw_reading: float = 0.0
-        self.filtered_concentration: float = 0.0
-        self.filtered_rate: float = 0.0       # dφ/dt from Kalman
+        self.filtered_temperature: float = 0.0
+        self.dT_dt: float = 0.0
         self.gradient: np.ndarray = np.zeros(3)
-        self.velocity: np.ndarray = np.zeros(3)
 
         # ── Gossip state ──
-        self.inbox: list[GossipMessage] = []
-        self.predictions: dict[str, float] = {}  # origin -> arrival_time
+        self.inbox: list[NegotiationMessage] = []
+        self.neighbor_urgencies: dict[str, float] = {}  # origin -> urgency
         self.messages_sent: int = 0
         self.messages_received: int = 0
 
@@ -68,55 +115,79 @@ class SensorNode:
 
     # ── Sensing ────────────────────────────────────────────────────────
 
-    def sense(self, phi: np.ndarray) -> float:
-        """Read concentration, add noise, update Kalman filter.
+    def sense(self, T: np.ndarray, timestamp: float) -> float:
+        """Read temperature, add noise, update rolling buffer.
 
-        Returns the Kalman-filtered concentration estimate.
+        Returns the (noisy) temperature reading.
         """
-        true_value = float(phi[self.position])
+        true_value = float(T[self.position])
 
         if self.sensor_sigma > 0:
             noise = self._rng.normal(0, self.sensor_sigma)
-            self.raw_reading = max(0.0, true_value + noise)
+            self.raw_reading = true_value + noise
         else:
             self.raw_reading = true_value
 
-        self.kf.predict()
-        self.kf.update(np.array([self.raw_reading]))
+        self.buffer.append(timestamp, self.raw_reading)
+        self.filtered_temperature = self.raw_reading
+        self.dT_dt = self.buffer.slope()
 
-        self.filtered_concentration = float(self.kf.x[0])
-        self.filtered_rate = float(self.kf.x[1])
+        return self.filtered_temperature
 
-        return self.filtered_concentration
+    # ── TTI (Time-To-Impact) ──────────────────────────────────────────
 
-    # ── Gradient and velocity ──────────────────────────────────────────
+    @property
+    def tti(self) -> float:
+        """Time-To-Impact: seconds until setpoint breach at current rate.
 
-    def compute_gradient(self, phi: np.ndarray, walls: np.ndarray) -> np.ndarray:
-        """Compute spatial gradient ∇φ using central differences.
-
-        Uses the world phi field for finite differences at this node's
-        position, respecting wall boundaries (Neumann: zero gradient at walls).
+        Returns inf if temperature is falling, stable, or already below setpoint
+        with no upward trend.
         """
-        center_val = phi[self.position]
+        if self.dT_dt <= 1e-10:
+            return float("inf")
+
+        gap = self.setpoint - self.filtered_temperature
+        if gap <= 0:
+            # Already above setpoint
+            return 0.0
+
+        return gap / self.dT_dt
+
+    @property
+    def urgency(self) -> float:
+        """Urgency = 1/TTI. Higher means more urgent need for cooling."""
+        t = self.tti
+        if t <= 0:
+            return float("inf")
+        if t == float("inf"):
+            return 0.0
+        return 1.0 / t
+
+    # ── Gradient ──────────────────────────────────────────────────────
+
+    def compute_gradient(self, T: np.ndarray, walls: np.ndarray) -> np.ndarray:
+        """Compute spatial gradient nabla(T) using central differences.
+
+        Respects wall boundaries (Neumann: zero gradient at walls).
+        """
+        center_val = T[self.position]
         grad = np.zeros(3)
 
         for axis in range(3):
             pos = self.position[axis]
-            size = phi.shape[axis]
+            size = T.shape[axis]
 
-            # Forward neighbor
             fwd_idx = list(self.position)
             if pos + 1 < size:
                 fwd_idx[axis] = pos + 1
-                fwd_val = center_val if walls[tuple(fwd_idx)] else phi[tuple(fwd_idx)]
+                fwd_val = center_val if walls[tuple(fwd_idx)] else T[tuple(fwd_idx)]
             else:
                 fwd_val = center_val
 
-            # Backward neighbor
             bwd_idx = list(self.position)
             if pos - 1 >= 0:
                 bwd_idx[axis] = pos - 1
-                bwd_val = center_val if walls[tuple(bwd_idx)] else phi[tuple(bwd_idx)]
+                bwd_val = center_val if walls[tuple(bwd_idx)] else T[tuple(bwd_idx)]
             else:
                 bwd_val = center_val
 
@@ -125,76 +196,44 @@ class SensorNode:
         self.gradient = grad
         return grad
 
-    def compute_velocity(self) -> np.ndarray:
-        """Estimate apparent flow velocity from temporal and spatial gradients.
-
-        v̂ = -(dφ/dt) / |∇φ|² × ∇φ
-
-        Derived from the advection equation for the concentration front:
-        dφ/dt + v · ∇φ = 0.  When gradient is negligible, velocity is zero.
-        """
-        grad_mag_sq = float(np.dot(self.gradient, self.gradient))
-
-        if grad_mag_sq < 1e-12:
-            self.velocity = np.zeros(3)
-        else:
-            self.velocity = -(self.filtered_rate / grad_mag_sq) * self.gradient
-
-        return self.velocity
-
     # ── Gossip ─────────────────────────────────────────────────────────
 
-    def create_gossip_message(
-        self, timestamp: float, detection_threshold: float = 0.01
-    ) -> GossipMessage | None:
-        """Create a gossip message if this node detects significant gas."""
-        if self.filtered_concentration < detection_threshold:
+    def create_negotiation_message(
+        self, timestamp: float, talk_threshold: float = 0.01
+    ) -> NegotiationMessage | None:
+        """Create a negotiation message if temperature is changing significantly.
+
+        Only gossip if |dT/dt| > talk_threshold (saves bandwidth).
+        """
+        if abs(self.dT_dt) < talk_threshold:
             return None
 
         self.messages_sent += 1
-        return GossipMessage(
+        return NegotiationMessage(
             origin_node=self.name,
             origin_position=self.position,
             sender_node=self.name,
             timestamp=timestamp,
-            concentration=self.filtered_concentration,
+            temperature=self.filtered_temperature,
+            dT_dt=self.dT_dt,
             gradient=self.gradient.copy(),
-            velocity=self.velocity.copy(),
+            urgency=self.urgency,
             hops=0,
         )
 
-    def receive_gossip(self, message: GossipMessage) -> GossipMessage | None:
-        """Process an incoming gossip message.
+    def receive_negotiation(self, message: NegotiationMessage) -> NegotiationMessage | None:
+        """Process an incoming negotiation message.
 
-        Computes predicted arrival time from the message's origin.
-        Returns a forwarded copy if the prediction is novel (earlier than
-        any existing prediction from that origin), otherwise None.
+        Updates neighbor urgency table. Returns a forwarded copy if the
+        urgency from this origin is higher than previously known.
         """
         self.messages_received += 1
         self.inbox.append(message)
 
-        # Compute predicted arrival time at this node
-        speed = float(np.linalg.norm(message.velocity))
-        if speed < 1e-10:
-            arrival = float("inf")
-        else:
-            displacement = (
-                np.array(self.position, dtype=float)
-                - np.array(message.origin_position, dtype=float)
-            )
-            distance = float(np.linalg.norm(displacement)) * self.dx
-
-            # Only predict if gas is moving toward us
-            if np.dot(message.velocity, displacement) > 1e-12:
-                arrival = message.timestamp + distance / speed
-            else:
-                arrival = float("inf")
-
-        # Update prediction table if this is earlier
         origin = message.origin_node
-        existing = self.predictions.get(origin, float("inf"))
-        if arrival < existing:
-            self.predictions[origin] = arrival
+        existing = self.neighbor_urgencies.get(origin, 0.0)
+        if message.urgency > existing:
+            self.neighbor_urgencies[origin] = message.urgency
             return message.forward(self.name)
 
         return None
@@ -202,16 +241,19 @@ class SensorNode:
     # ── Properties ─────────────────────────────────────────────────────
 
     @property
-    def earliest_predicted_arrival(self) -> float:
-        """Earliest predicted arrival time from any gossip source."""
-        if not self.predictions:
-            return float("inf")
-        return min(self.predictions.values())
+    def max_neighbor_urgency(self) -> float:
+        """Maximum urgency reported by any neighbor (including self)."""
+        own = self.urgency
+        if not self.neighbor_urgencies:
+            return own
+        return max(own, max(self.neighbor_urgencies.values()))
 
     @property
-    def concentration_uncertainty(self) -> float:
-        """Kalman filter uncertainty (variance) on concentration estimate."""
-        return float(self.kf.P[0, 0])
+    def total_known_urgency(self) -> float:
+        """Sum of all known urgencies (self + neighbors) for proportional allocation."""
+        total = self.urgency
+        total += sum(self.neighbor_urgencies.values())
+        return total
 
     def clear_inbox(self) -> None:
         """Clear the message inbox (call at start of each step)."""
@@ -224,14 +266,14 @@ class SensorNode:
         return {
             "name": self.name,
             "position": self.position,
-            "raw_reading": round(self.raw_reading, 6),
-            "filtered_concentration": round(self.filtered_concentration, 6),
-            "filtered_rate": round(self.filtered_rate, 6),
-            "concentration_uncertainty": round(self.concentration_uncertainty, 6),
+            "raw_reading": round(self.raw_reading, 4),
+            "filtered_temperature": round(self.filtered_temperature, 4),
+            "dT_dt": round(self.dT_dt, 6),
+            "tti": self.tti if self.tti != float("inf") else None,
+            "urgency": round(self.urgency, 6) if self.urgency != float("inf") else None,
             "gradient_magnitude": round(float(np.linalg.norm(self.gradient)), 6),
-            "velocity_magnitude": round(float(np.linalg.norm(self.velocity)), 6),
-            "earliest_predicted_arrival": self.earliest_predicted_arrival,
             "messages_sent": self.messages_sent,
             "messages_received": self.messages_received,
-            "n_predictions": len(self.predictions),
+            "n_neighbor_urgencies": len(self.neighbor_urgencies),
+            "buffer_fill": self.buffer.size,
         }
