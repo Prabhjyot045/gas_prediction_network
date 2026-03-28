@@ -1,52 +1,33 @@
-# Block 4: Sensor — Kalman Filter + Gossip Protocol
+# Block 4: Sensor — Rate-of-Change Monitoring + Gossip Protocol
 
 ## Overview
 
-Event-driven sensor nodes that read concentration from the World, apply Kalman filtering for noise reduction, estimate gas flow velocity from gradients, and propagate predictions through the sensor network via a gossip protocol. This is the core novel component of VDPA: **distributed predictive actuation via gossip-propagated gradient fields**.
-
-## How to Run
-
-```bash
-conda activate ece659
-
-# Demo: Kalman filter + gossip visualization
-python -m blocks.sensor.demo --config configs/environments/default_maze.json
-
-# More simulation steps
-python -m blocks.sensor.demo --config configs/environments/default_maze.json --steps 300
-
-# Multi-hop gossip (faster prediction propagation)
-python -m blocks.sensor.demo --config configs/environments/default_maze.json --gossip-rounds 3
-
-# Run tests
-python -m pytest blocks/sensor/test_sensor.py -v
-```
+Event-driven sensor nodes that read environmental metrics (e.g., temperature) from the World, monitor their rate of change via a rolling buffer, predict Time-To-Impact (TTI) for comfort thresholds, and propagate urgency predictions through the sensor network via a gossip protocol. This forms the sensing and prediction layers of **Aether-Edge**: distributed predictive resource allocation.
 
 ## Architecture
 
 ### SensorNode
 
-Each node maintains:
-- **Kalman filter** (FilterPy) with state `[φ, dφ/dt]` for noise-corrected concentration tracking
-- **Spatial gradient** `∇φ` via central differences on the world's concentration field
-- **Flow velocity estimate** `v̂ = -(dφ/dt) / |∇φ|² × ∇φ` — the apparent velocity of the gas front
-- **Prediction table** mapping gossip origins to predicted arrival times
+Each edge inference node separates concerns into three layers:
+- **Sensing (Layer 1)**: Maintains a `RollingBuffer` of recent readings and computes the least-squares slope (`dT/dt`) to estimate the rate of change.
+- **Prediction (Layer 2)**: Computes Time-To-Impact `TTI = (setpoint - current) / (dT/dt)`. Converts this into an actionable `urgency = 1 / TTI` score.
+- **Communication (Layer 3)**: Creates `NegotiationMessage`s carrying the node's urgency, temperature, and rate of change.
 
 ### Gossip Protocol
 
-When a node detects gas above a threshold:
-1. It creates a `GossipMessage` carrying its concentration, gradient, and velocity
-2. The message is delivered to all NetworkX neighbors
-3. Receiving nodes compute predicted arrival time: `T = timestamp + distance / |velocity|`
-4. If the prediction is novel (earlier than existing), the message is forwarded further
-5. Multi-hop propagation controlled by `gossip_rounds` (per step) and `max_hops` (total)
+When a node detects a meaningful rate of change (`|dT/dt| > talk_threshold`):
+1. It creates a `NegotiationMessage` carrying its local urgency.
+2. The message is delivered to all NetworkX neighbors.
+3. Receiving nodes compute their highest known urgencies and update their tables.
+4. If a message contains a higher urgency from a given origin than previously known, the message is forwarded further.
+5. Multi-hop propagation is controlled by `gossip_rounds` (per step) and `max_hops` (total).
 
 ### SensorField
 
 High-level manager that orchestrates the per-step cycle:
-1. **Sense**: all nodes read `world.phi` at their position, add noise, run Kalman update
-2. **Gradient**: compute spatial gradient and estimate flow velocity
-3. **Gossip**: propagate predictions through the network
+1. **Sense**: all nodes read temperature (with optional noise), update their rolling buffers, and compute `dT/dt`.
+2. **Gradient**: compute spatial gradients via central differences.
+3. **Gossip**: calculate TTI/urgencies and propagate predictions through the network.
 
 ## Configuration
 
@@ -60,8 +41,7 @@ Block 4 uses the existing `sensors` and `noise` sections from the environment JS
   "communication_radius": 5.0
 },
 "noise": {
-  "sensor_sigma": 0.05,
-  "source_rate_sigma": 0.0
+  "sensor_sigma": 0.05
 }
 ```
 
@@ -69,10 +49,10 @@ Additional `SensorField` parameters:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `gossip_rounds` | 1 | Gossip hops per simulation step (1 = realistic delay) |
-| `detection_threshold` | 0.01 | Minimum concentration to trigger gossip |
+| `gossip_rounds` | 1 | Gossip hops per simulation step |
+| `talk_threshold` | 0.01 | Minimum `\|dT/dt\|` to trigger gossip message generation |
 | `max_hops` | 10 | Maximum relay hops for a single message |
-| `process_noise_var` | 0.01 | Kalman process noise variance |
+| `buffer_seconds` | 30.0 | Time window for the rolling buffer |
 | `seed` | None | RNG seed for reproducible noise |
 
 ## API
@@ -82,7 +62,7 @@ from blocks.world import Environment, World
 from blocks.network import SensorNetwork
 from blocks.sensor import SensorField
 
-env = Environment("configs/environments/default_maze.json")
+env = Environment("configs/environments/university_floor.json")
 world = World(env)
 network = SensorNetwork(env)
 field = SensorField(env, network, gossip_rounds=1, seed=42)
@@ -93,36 +73,18 @@ for step in range(200):
     field.step(world)
 
 # Query predictions
-arrivals = field.get_predicted_arrivals()  # {node_name: arrival_time}
-alerts = field.get_alert_nodes(world.time, horizon=5.0)  # nodes expecting gas soon
+urgencies = field.get_urgencies()  # {node_name: urgency}
+alerts = field.get_alert_nodes(horizon=30.0)  # nodes expecting breach within 30s
 
 # Metrics
 print(field.metrics(world))
-
-# Individual node access
-for name, node in field.nodes.items():
-    print(node.metrics())
 ```
 
 ## Metrics
 
-`SensorField.metrics()` returns:
+`SensorField.metrics()` returns aggregation statistics including `n_heating`, `n_with_urgency`, `urgency_coverage`, `total_messages_sent`, `mean_dT_dt`, and `mean_tti`.
 
-| Metric | Description |
-|--------|-------------|
-| `n_nodes` | Total sensor count |
-| `n_detecting` | Nodes with concentration above threshold |
-| `n_with_predictions` | Nodes that have received gossip predictions |
-| `prediction_coverage` | Fraction of nodes with predictions |
-| `total_messages_sent` | Cumulative gossip messages generated |
-| `total_messages_received` | Cumulative messages received |
-| `mean_filtered_concentration` | Average Kalman-filtered reading |
-| `mean_velocity_magnitude` | Average estimated flow speed |
-| `earliest_global_arrival` | Earliest predicted arrival across all nodes |
-| `mean_predicted_arrival` | Mean predicted arrival time |
-| `concentration_rmse` | RMSE vs ground truth (if world provided) |
-
-`SensorNode.metrics()` returns per-node details including `filtered_concentration`, `gradient_magnitude`, `velocity_magnitude`, `earliest_predicted_arrival`, and message counts.
+`SensorNode.metrics()` returns per-node details including `filtered_temperature`, `dT_dt`, `tti`, `urgency`, `gradient_magnitude`, and message counts.
 
 ## Run Tests
 

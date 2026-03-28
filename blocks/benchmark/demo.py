@@ -1,9 +1,9 @@
 """
-Standalone demo for Block 7 — VDPA vs Centralized Benchmark.
+Standalone demo for Block 7 — Aether-Edge vs Centralized Benchmark.
 
 Usage:
-    python -m blocks.benchmark.demo --config configs/environments/default_maze.json
-    python -m blocks.benchmark.demo --config configs/environments/default_maze.json --steps 500 --save results/benchmark
+    python -m blocks.benchmark.demo --config configs/environments/university_floor.json
+    python -m blocks.benchmark.demo --config configs/environments/university_floor.json --steps 500 --save results/benchmark
 """
 
 from __future__ import annotations
@@ -22,14 +22,14 @@ from blocks.benchmark.benchmark import Benchmark
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="VDPA Block 7 — Benchmark Demo")
+    p = argparse.ArgumentParser(description="Aether-Edge Block 7 — Benchmark Demo")
     p.add_argument("--config", type=str, required=True)
     p.add_argument("--steps", type=int, default=400)
-    p.add_argument("--horizon", type=float, default=5.0)
-    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--buffer", type=float, default=30.0)
+    p.add_argument("--threshold", type=float, default=0.01)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--save", type=str, default=None, help="Save results to directory")
-    p.add_argument("--z-slice", type=int, default=2)
+    p.add_argument("--z-slice", type=int, default=1)
     return p.parse_args()
 
 
@@ -40,22 +40,22 @@ def main() -> None:
         env_config=args.config,
         n_steps=args.steps,
         record_every=5,
-        predictive_horizon=args.horizon,
         gossip_rounds=2,
-        reactive_threshold=args.threshold,
+        buffer_seconds=args.buffer,
+        talk_threshold=args.threshold,
         seed=args.seed,
         output_dir=args.save,
     )
 
-    print("Running VDPA (predictive) simulation...")
-    pred_sim = bm.run_predictive()
-    print(f"  Done: {pred_sim.summary()}")
+    print("Running Aether-Edge (decentralized) simulation...")
+    edge_sim = bm.run_edge()
+    print(f"  Done: {edge_sim.summary()}")
 
-    print("\nRunning centralized (reactive) simulation...")
-    react_sim = bm.run_reactive()
-    print(f"  Done: {react_sim.summary()}")
+    print("\nRunning Centralized (reactive) simulation...")
+    cent_sim = bm.run_centralized()
+    print(f"  Done: {cent_sim.summary()}")
 
-    comparison = bm.compare(pred_sim, react_sim)
+    comparison = bm.compare(edge_sim, cent_sim)
 
     print("\n" + "=" * 60)
     print("BENCHMARK RESULTS")
@@ -69,24 +69,23 @@ def main() -> None:
     # ── Visualization ──────────────────────────────────────────────────
     z = args.z_slice
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle("VDPA vs Centralized Reactive — Benchmark", fontsize=14)
+    fig.suptitle("Aether-Edge vs Centralized (Baseline) — Benchmark", fontsize=14)
 
-    # Row 1: Final concentration fields
+    # Row 1: Final temperature fields
     for col, (sim, label) in enumerate([
-        (pred_sim, "VDPA (Predictive)"), (react_sim, "Centralized (Reactive)")
+        (edge_sim, "Edge (Predictive)"), (cent_sim, "Centralized (Reactive)")
     ]):
         ax = axes[0, col]
-        phi_slice = sim.world.phi[:, :, z].T
+        temp_slice = sim.world.T[:, :, z].T
         wall_slice = sim.env.walls[:, :, z].T
-        masked = np.ma.array(phi_slice, mask=wall_slice)
+        masked = np.ma.array(temp_slice, mask=wall_slice)
         im = ax.imshow(masked, cmap="hot", origin="lower",
-                       extent=(-0.5, sim.env.nx - 0.5, -0.5, sim.env.ny - 0.5))
-        plt.colorbar(im, ax=ax, label="Concentration")
+                       extent=(-0.5, sim.env.nx - 0.5, -0.5, sim.env.ny - 0.5), vmax=30.0, vmin=20.0)
+        plt.colorbar(im, ax=ax, label="Temperature (C)")
 
-        for door_name, door in sim.env.doors.items():
-            s = door.slices
-            cx, cy = (s[0].start + s[0].stop) / 2, (s[1].start + s[1].stop) / 2
-            color = "red" if door.state == "closed" else "lime"
+        for damper_name, damper in sim.env.dampers.items():
+            cx, cy = damper.position[0], damper.position[1]
+            color = "lime" if damper.opening > 0.1 else "red"
             ax.plot(cx, cy, "s", color=color, markersize=10, markeredgecolor="white")
 
         ax.set_title(label, fontsize=10)
@@ -95,58 +94,57 @@ def main() -> None:
     # Top-right: comparison summary
     ax = axes[0, 2]
     ax.axis("off")
-    p = comparison["predictive"]
-    r = comparison["reactive"]
-    c = comparison["comparison"]
+    e = comparison["edge"]
+    c = comparison["centralized"]
+    comp = comparison["comparison"]
     text = (
-        f"{'Metric':<28} {'Predictive':>12} {'Reactive':>12}\n"
+        f"{'Metric':<28} {'Edge':>12} {'Centralized':>12}\n"
         f"{'─' * 54}\n"
-        f"{'Cumul. Contamination':<28} {p['cumulative_contamination']:>12.2f} {r['cumulative_contamination']:>12.2f}\n"
-        f"{'Response Time (s)':<28} {str(p['response_time'] or 'N/A'):>12} {str(r['response_time'] or 'N/A'):>12}\n"
-        f"{'First Detection (s)':<28} {str(p['first_detection_time'] or 'N/A'):>12} {str(r['first_detection_time'] or 'N/A'):>12}\n"
-        f"{'First Actuation (s)':<28} {str(p['first_actuation_time'] or 'N/A'):>12} {str(r['first_actuation_time'] or 'N/A'):>12}\n"
-        f"{'Doors Closed':<28} {p['doors_closed']:>12} {r['doors_closed']:>12}\n"
-        f"{'Final Total Mass':<28} {p['total_mass_final']:>12.2f} {r['total_mass_final']:>12.2f}\n"
-        f"{'Contaminated Volume':<28} {p['contaminated_volume']:>12} {r['contaminated_volume']:>12}\n"
+        f"{'Cumul. Comfort Violation':<28} {e['cumulative_comfort_violation']:>12.2f} {c['cumulative_comfort_violation']:>12.2f}\n"
+        f"{'Cumul. Energy':<28} {e['cumulative_energy']:>12.2f} {c['cumulative_energy']:>12.2f}\n"
+        f"{'Max Overshoot (C)':<28} {e['max_overshoot']:>12.2f} {c['max_overshoot']:>12.2f}\n"
+        f"{'Mean Age of Info (s)':<28} {e['mean_aoi']:>12.2f} {c['mean_aoi']:>12.2f}\n"
+        f"{'Total Messages':<28} {e['total_messages']:>12} {c['total_messages']:>12}\n"
         f"{'─' * 54}\n"
-        f"Contamination Reduction: {c['contamination_reduction_pct']:.1f}%"
+        f"Comfort Improvement: {comp['comfort_improvement_pct']:.1f}%\n"
+        f"Energy Savings:      {comp['energy_savings_pct']:.1f}%"
     )
     ax.text(0.05, 0.95, text, transform=ax.transAxes, fontsize=9,
             verticalalignment="top", fontfamily="monospace",
             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.9))
 
     # Row 2: Time series comparison
-    # Cumulative contamination
+    # Cumulative comfort violation
     ax = axes[1, 0]
-    s1, c1 = pred_sim.collector.scalar_series("cumulative_contamination")
-    s2, c2 = react_sim.collector.scalar_series("cumulative_contamination")
-    ax.plot(s1, c1, "b-", linewidth=2, label="Predictive")
-    ax.plot(s2, c2, "r--", linewidth=2, label="Reactive")
+    s1, v1 = edge_sim.collector.scalar_series("cumulative_comfort_violation")
+    s2, v2 = cent_sim.collector.scalar_series("cumulative_comfort_violation")
+    ax.plot(s1, v1, "b-", linewidth=2, label="Edge")
+    ax.plot(s2, v2, "r--", linewidth=2, label="Centralized")
     ax.set_xlabel("Step")
-    ax.set_ylabel("Cumulative Contamination")
-    ax.set_title("Contamination Over Time", fontsize=10)
+    ax.set_ylabel("Comfort Violation")
+    ax.set_title("Comfort Violation Over Time", fontsize=10)
     ax.legend()
 
-    # Total mass
+    # Cumulative energy
     ax = axes[1, 1]
-    s1, m1 = pred_sim.collector.scalar_series("total_mass")
-    s2, m2 = react_sim.collector.scalar_series("total_mass")
-    ax.plot(s1, m1, "b-", linewidth=2, label="Predictive")
-    ax.plot(s2, m2, "r--", linewidth=2, label="Reactive")
+    s1, e1 = edge_sim.collector.scalar_series("cumulative_energy")
+    s2, e2 = cent_sim.collector.scalar_series("cumulative_energy")
+    ax.plot(s1, e1, "b-", linewidth=2, label="Edge")
+    ax.plot(s2, e2, "r--", linewidth=2, label="Centralized")
     ax.set_xlabel("Step")
-    ax.set_ylabel("Total Mass")
-    ax.set_title("Total Mass Over Time", fontsize=10)
+    ax.set_ylabel("Energy")
+    ax.set_title("Energy Usage Over Time", fontsize=10)
     ax.legend()
 
-    # Contaminated volume
+    # Max overshoot
     ax = axes[1, 2]
-    s1, v1 = pred_sim.collector.scalar_series("contaminated_volume")
-    s2, v2 = react_sim.collector.scalar_series("contaminated_volume")
-    ax.plot(s1, v1, "b-", linewidth=2, label="Predictive")
-    ax.plot(s2, v2, "r--", linewidth=2, label="Reactive")
+    s1, o1 = edge_sim.collector.scalar_series("max_overshoot")
+    s2, o2 = cent_sim.collector.scalar_series("max_overshoot")
+    ax.plot(s1, o1, "b-", linewidth=2, label="Edge")
+    ax.plot(s2, o2, "r--", linewidth=2, label="Centralized")
     ax.set_xlabel("Step")
-    ax.set_ylabel("Contaminated Cells")
-    ax.set_title("Contaminated Volume Over Time", fontsize=10)
+    ax.set_ylabel("Max Overshoot (C)")
+    ax.set_title("Peak Temperature Overshoot", fontsize=10)
     ax.legend()
 
     plt.tight_layout()
