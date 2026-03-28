@@ -28,7 +28,7 @@ class Renderer:
         self,
         env: Environment,
         *,
-        opacity_range: tuple[float, float] = (0.0, 0.6),
+        opacity_range: tuple[float, float] = (0.2, 0.8),
         clim: tuple[float, float] | None = None,
         cmap: str = "coolwarm",
         background: str = "black",
@@ -89,10 +89,10 @@ class Renderer:
 
     def _add_actors(self, pl: pv.Plotter, world: World) -> None:
         """Add all visual actors to the plotter."""
-        vol = self._build_temperature_volume(world.T)
+        self.vol = self._build_temperature_volume(world.T)
         opacity = np.linspace(self.opacity_range[0], self.opacity_range[1], 10)
         pl.add_volume(
-            vol, scalars="temperature", cmap=self.cmap,
+            self.vol, scalars="temperature", cmap=self.cmap,
             clim=self.clim, opacity=opacity, shade=False,
         )
 

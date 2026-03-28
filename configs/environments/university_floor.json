@@ -128,10 +128,10 @@
       "zone": "classroom_101",
       "occupancy_profile": [
         { "time": 0,    "rate": 0.001 },
-        { "time": 300,  "rate": 0.008 },
-        { "time": 3600, "rate": 0.001 },
-        { "time": 3900, "rate": 0.007 },
-        { "time": 7200, "rate": 0.001 }
+        { "time": 200,  "rate": 0.015 },
+        { "time": 600,  "rate": 0.001 },
+        { "time": 900,  "rate": 0.012 },
+        { "time": 1500, "rate": 0.001 }
       ]
     },
     {
@@ -145,15 +145,16 @@
       "zone": "classroom_102",
       "occupancy_profile": [
         { "time": 0,    "rate": 0.001 },
-        { "time": 300,  "rate": 0.005 },
-        { "time": 3600, "rate": 0.009 },
-        { "time": 7200, "rate": 0.001 }
+        { "time": 250,  "rate": 0.012 },
+        { "time": 800,  "rate": 0.001 },
+        { "time": 1200, "rate": 0.014 },
+        { "time": 1800, "rate": 0.001 }
       ]
     },
     {
       "name": "lab_equipment",
       "zone": "computer_lab",
-      "rate": 0.005,
+      "rate": 0.008,
       "schedule": { "start": 0, "end": null }
     },
     {
@@ -161,8 +162,8 @@
       "zone": "computer_lab",
       "occupancy_profile": [
         { "time": 0,    "rate": 0.002 },
-        { "time": 300,  "rate": 0.004 },
-        { "time": 7200, "rate": 0.002 }
+        { "time": 150,  "rate": 0.010 },
+        { "time": 600,  "rate": 0.002 }
       ]
     },
     {
@@ -176,8 +177,8 @@
       "zone": "conference_room",
       "occupancy_profile": [
         { "time": 0,    "rate": 0.0005 },
-        { "time": 1800, "rate": 0.006  },
-        { "time": 5400, "rate": 0.0005 }
+        { "time": 400,  "rate": 0.012  },
+        { "time": 1000, "rate": 0.0005 }
       ]
     },
     {
@@ -210,8 +211,8 @@
   },
 
   "network": {
-    "polling_interval": 5.0,
-    "jitter_sigma": 0.5,
-    "compute_delay": 1.0
+    "polling_interval": 15.0,
+    "jitter_sigma": 2.0,
+    "compute_delay": 3.0
   }
 }

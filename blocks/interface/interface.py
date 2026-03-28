@@ -161,29 +161,33 @@ class EnvironmentInterface:
         """
         openings: dict[str, float] = {}
 
-        # Collect urgency per damper from nearby sensors
-        damper_urgencies: dict[str, float] = {}
         for damper_name, sensors in self.damper_sensors.items():
             if not sensors:
-                damper_urgencies[damper_name] = 0.0
+                openings[damper_name] = 0.1
                 continue
-            # Use max urgency from nearby sensors (including gossip neighbors)
-            max_urg = 0.0
+            
+            # Local urgency is solely based on the sensors physically controlling this damper
+            local_urg = 0.0
+            known_urgencies: dict[str, float] = {}
+            
             for s_name in sensors:
                 node = self.sensor_field.nodes[s_name]
-                max_urg = max(max_urg, node.urgency)
-                for u in node.neighbor_urgencies.values():
-                    max_urg = max(max_urg, u)
-            damper_urgencies[damper_name] = max_urg
+                local_urg = max(local_urg, node.urgency)
+                
+                # Collect all global gossip this cluster of sensors heard
+                for origin, u in node.neighbor_urgencies.items():
+                    known_urgencies[origin] = max(known_urgencies.get(origin, 0.0), u)
+                    
+            # A damper's perceived global urgency is its own + what it heard from others
+            total_urgency = local_urg + sum(known_urgencies.values())
 
-        # Proportional allocation: redistribute fixed airflow budget
-        total_urgency = sum(damper_urgencies.values())
-        for damper_name, urg in damper_urgencies.items():
             if total_urgency > 1e-10:
-                opening = urg / total_urgency
+                opening = local_urg / total_urgency
+                # Cap the opening if the absolute urgency is low to prevent overcooling
+                opening = min(opening, local_urg * 20.0)
             else:
-                # No urgency anywhere — minimal opening
                 opening = 0.1
+
             openings[damper_name] = max(0.0, min(1.0, opening))
 
             self.actions.append(VentAction(
@@ -233,6 +237,8 @@ class EnvironmentInterface:
         for damper_name, urg in damper_urgencies.items():
             if total_urgency > 1e-10:
                 opening = urg / total_urgency
+                # Cap the opening if the absolute urgency is low
+                opening = min(opening, urg * 20.0)
             else:
                 opening = 0.1
             openings[damper_name] = max(0.0, min(1.0, opening))
