@@ -5,9 +5,9 @@ Verifies:
 - Shared Environment object stays in sync across all blocks
 - Temperature field integrity between World and Renderer
 - Sensor network uses same environment
-- SensorField reads temperatures from World, computes TTI/urgency
-- DamperController uses SensorField data to set VAV openings
-- Simulation loop ties all blocks together
+- Interface reads environment → feeds SensorField → actuates vents
+- SensorField does pure inference (no World coupling in step())
+- Simulation loop ties all blocks through the Interface
 - Benchmark runs edge vs centralized comparison
 - MetricsCollector accumulates from all blocks
 - Decoupling between blocks
@@ -29,9 +29,9 @@ import pytest
 from blocks.world.environment import Environment
 from blocks.world.world import World
 from blocks.visualization.renderer import Renderer
-from blocks.network.sensor_network import SensorNetwork
+from blocks.sensor.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import DamperController
+from blocks.interface.interface import EnvironmentInterface
 from blocks.simulation.simulation import Simulation
 from blocks.benchmark.benchmark import Benchmark
 from blocks.metrics.collector import MetricsCollector
@@ -272,7 +272,7 @@ class TestMetricsIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 6. SensorField integration (Block 4 ↔ Block 1 + Block 3)
+# 6. SensorField integration — pure inference, no World coupling in step()
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSensorFieldIntegration:
@@ -285,18 +285,23 @@ class TestSensorFieldIntegration:
         assert field.network is net
         assert field.env is world.env
 
-    def test_sensor_field_reads_temperature_from_world(self, setup):
-        """SensorField nodes should read temperature from World's T field."""
+    def test_sensor_field_processes_readings(self, setup):
+        """SensorField nodes should process scalar readings (not World.T directly)."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
 
         world.run(50)
-        field.step(world)
+        # Interface reads World.T → scalar readings
+        readings = {
+            name: float(world.T[node.position])
+            for name, node in field.nodes.items()
+        }
+        field.step(readings, timestamp=world.time)
 
-        # Nodes near the heat source (room_A) should have temperature above ambient
+        # Nodes near the heat source should have values above ambient
         any_heated = any(
-            n.filtered_temperature > env.ambient_temperature
+            n.filtered_value > env.ambient_temperature
             for n in field.nodes.values()
         )
         assert any_heated
@@ -309,20 +314,24 @@ class TestSensorFieldIntegration:
 
         world.run(10)
         step_before = world.step_count
-        field.step(world)
+        readings = {name: float(world.T[node.position]) for name, node in field.nodes.items()}
+        field.step(readings, timestamp=world.time)
         assert world.step_count == step_before
 
     def test_urgency_increases_with_heat(self, setup):
-        """Nodes in a heated zone should develop non-zero urgency."""
+        """Nodes receiving rising values should develop non-zero urgency."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
 
-        for _ in range(50):
+        for step_i in range(50):
             world.step()
-            field.step(world)
+            readings = {
+                name: float(world.T[node.position])
+                for name, node in field.nodes.items()
+            }
+            field.step(readings, timestamp=world.time)
 
-        # At least one node should have urgency > 0
         any_urgent = any(
             n.urgency > 0 for n in field.nodes.values()
         )
@@ -336,9 +345,12 @@ class TestSensorFieldIntegration:
 
         for _ in range(50):
             world.step()
-            field.step(world)
+            readings = {
+                name: float(world.T[node.position])
+                for name, node in field.nodes.items()
+            }
+            field.step(readings, timestamp=world.time)
 
-        # Nodes with no network neighbors should never receive messages
         for name, node in field.nodes.items():
             if net.graph.degree(name) == 0:
                 assert node.messages_received == 0
@@ -352,82 +364,99 @@ class TestSensorFieldIntegration:
 
         for _ in range(20):
             world.step()
-            field.step(world)
+            readings = {
+                name: float(world.T[node.position])
+                for name, node in field.nodes.items()
+            }
+            field.step(readings, timestamp=world.time)
 
-        m = field.metrics(world)
+        m = field.metrics()
         mc.record(m, step=world.step_count)
 
         snap = mc.snapshot()
         assert snap["n_records"] == 1
         assert snap["records"][0]["n_nodes"] > 0
-        assert "temperature_rmse" in snap["records"][0]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 7. Actuator integration (Block 5 ↔ Block 1 + Block 4)
+# 7. Interface integration (reads environment, feeds sensors, actuates vents)
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestActuatorIntegration:
-    def test_actuator_shares_env(self, setup):
-        """DamperController should reference the same Environment."""
+class TestInterfaceIntegration:
+    def test_interface_shares_env(self, setup):
+        """EnvironmentInterface should reference the same Environment."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ctrl = DamperController(env, field, policy="edge", seed=42)
-        assert ctrl.env is env
-        assert ctrl.sensor_field is field
+        iface = EnvironmentInterface(env, field, policy="edge", seed=42)
+        assert iface.env is env
+        assert iface.sensor_field is field
 
-    def test_actuator_sets_damper_openings(self, setup):
-        """DamperController.evaluate() should return valid damper openings."""
+    def test_interface_reads_and_feeds(self, setup):
+        """Interface.step() should read World.T and feed SensorField."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ctrl = DamperController(env, field, policy="edge", seed=42)
+        iface = EnvironmentInterface(env, field, policy="edge", seed=42)
 
         for _ in range(20):
             world.step()
-            field.step(world)
-            openings = ctrl.evaluate(world)
+            iface.step(world)
+
+        # After stepping, sensors should have been fed values
+        any_heated = any(
+            n.filtered_value > env.ambient_temperature
+            for n in field.nodes.values()
+        )
+        assert any_heated
+
+    def test_interface_sets_damper_openings(self, setup):
+        """Interface.step() should return valid damper openings."""
+        env, world, renderer = setup
+        net = SensorNetwork(env)
+        field = SensorField(env, net, seed=42)
+        iface = EnvironmentInterface(env, field, policy="edge", seed=42)
+
+        for _ in range(20):
+            world.step()
+            openings = iface.step(world)
 
         assert "vav_A" in openings
         assert "vav_B" in openings
         for v in openings.values():
             assert 0.0 <= v <= 1.0
 
-    def test_actuator_does_not_step_world(self, setup):
-        """DamperController.evaluate() must not advance the World."""
+    def test_interface_does_not_step_world(self, setup):
+        """Interface.step() must not advance the World."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ctrl = DamperController(env, field, policy="edge", seed=42)
+        iface = EnvironmentInterface(env, field, policy="edge", seed=42)
 
         world.run(10)
-        field.step(world)
         step_before = world.step_count
-        ctrl.evaluate(world)
+        iface.step(world)
         assert world.step_count == step_before
 
     def test_heated_room_gets_more_cooling(self, setup):
-        """Room with active heat source should get higher damper opening."""
+        """Room with active heat source should get higher vent opening."""
         env, world, renderer = setup
         net = SensorNetwork(env)
         field = SensorField(env, net, gossip_rounds=2, seed=42)
-        ctrl = DamperController(env, field, policy="edge", proximity_radius=5.0, seed=42)
+        iface = EnvironmentInterface(env, field, policy="edge", proximity_radius=5.0, seed=42)
 
-        # Heat room_A significantly
         room_A = env.rooms["room_A"]
         for _ in range(30):
             world.T[room_A.slices] += 0.3
             world.step()
-            field.step(world)
+            iface.step(world)
 
-        openings = ctrl.evaluate(world)
-        # Room A (heated) should get more cooling than room B
+        openings = iface.step(world)
         assert openings["vav_A"] >= openings["vav_B"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 8. Simulation integration (Block 6 — full loop)
+# 8. Simulation integration (full loop)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationIntegration:
@@ -438,16 +467,15 @@ class TestSimulationIntegration:
         assert sim.world.env is env
         assert sim.network.env is env
         assert sim.sensor_field.env is env
-        assert sim.actuator.env is env
+        assert sim.interface.env is env
 
     def test_simulation_step_order(self):
-        """Each step: world -> sensor -> actuator, in that order."""
+        """Each step: world -> interface (read → infer → actuate)."""
         cfg = _write_config(_two_room_config())
         sim = Simulation(cfg, seed=42)
 
         sim.step()
         assert sim.world.step_count == 1
-        # Sensor field should have stepped
         assert sim.sensor_field._step_count == 1
 
     def test_simulation_metrics_collection(self):
@@ -483,7 +511,7 @@ class TestSimulationIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 9. Benchmark integration (Block 7 — comparison)
+# 9. Benchmark integration (comparison)
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkIntegration:
@@ -503,7 +531,6 @@ class TestBenchmarkIntegration:
         bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
         edge_sim = bm.run_edge()
         cent_sim = bm.run_centralized()
-        # Different World objects
         assert edge_sim.world is not cent_sim.world
         assert edge_sim.env is not cent_sim.env
 
@@ -553,6 +580,20 @@ class TestDecoupling:
         assert isinstance(pl, pv.Plotter)
         pl.close()
 
+    def test_sensor_field_decoupled_from_world(self):
+        """SensorField.step() takes readings dict, NOT a World object."""
+        cfg = _write_config(_two_room_config())
+        env = Environment(cfg)
+        net = SensorNetwork(env)
+        field = SensorField(env, net, seed=42)
+
+        # Feed synthetic readings — no World needed
+        readings = {name: 25.0 for name in field.nodes}
+        field.step(readings, timestamp=0.0)
+
+        for node in field.nodes.values():
+            assert node.filtered_value == pytest.approx(25.0)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # 11. Full integration — all blocks together
@@ -560,30 +601,29 @@ class TestDecoupling:
 
 class TestFullIntegration:
     def test_all_blocks_together(self):
-        """Full integration: World + Renderer + Network + SensorField + Actuator."""
+        """Full integration: World + Renderer + Network + SensorField + Interface."""
         cfg = _write_config(_two_room_config())
         env = Environment(cfg)
         world = World(env)
         renderer = Renderer(env)
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
-        ctrl = DamperController(env, field, policy="edge", seed=42)
+        iface = EnvironmentInterface(env, field, policy="edge", seed=42)
         mc = MetricsCollector("full_integration")
 
         # All share the same env
-        assert world.env is renderer.env is net.env is field.env is ctrl.env
+        assert world.env is renderer.env is net.env is field.env is iface.env
 
-        # Run simulation loop
+        # Run simulation loop via interface
         for step in range(50):
             world.step()
-            field.step(world)
-            ctrl.evaluate(world)
+            iface.step(world)
 
         # Collect metrics from all blocks
         mc.record({"block": "world", **world.metrics()}, step=50)
         mc.record({"block": "network", **net.metrics()}, step=50)
-        mc.record({"block": "sensor", **field.metrics(world)}, step=50)
-        mc.record({"block": "actuator", **ctrl.metrics()}, step=50)
+        mc.record({"block": "sensor", **field.metrics()}, step=50)
+        mc.record({"block": "interface", **iface.metrics()}, step=50)
 
         snap = mc.snapshot()
         assert snap["n_records"] == 4

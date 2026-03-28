@@ -8,24 +8,24 @@ Aether-Edge is a general-purpose **rate-of-change monitoring and prediction netw
 
 The "better than centralized" argument is simple: **network latency kills responsiveness**. A centralized BMS must poll sensors, transmit data, compute a decision, and push commands back — all while the environment changes. Edge nodes act on fresh local data immediately. The Age of Information (AoI) difference is the core metric.
 
-### Three-Layer Architecture
+### Architecture: Interface + Sensor Network
 
-The system cleanly separates concerns into three layers:
+The system enforces a clean separation between **what interacts with the environment** and **what does inference**:
 
-1. **Sensing Layer** — Rate-of-change monitoring (domain-agnostic)
-   - Rolling buffer of readings, least-squares slope estimation (dT/dt)
-   - This layer knows nothing about HVAC — it monitors any time-series metric
+**Interface Block** (`blocks/interface/`) — Environment I/O boundary
+- **Input**: Reads `World.T` at sensor positions → feeds scalar `(timestamp, value)` pairs to the sensor network
+- **Output**: Reads urgency from sensor network → routes fixed airflow budget → actuates vents
+- This is the only code that touches `World.T` or damper controls
 
-2. **Prediction Layer** — Time-To-Impact estimation
-   - TTI = (threshold - current) / (rate of change)
-   - Converts raw trends into actionable "urgency" scores
-   - Gossip protocol propagates urgency to neighbors for consensus
+**Sensor Network Block** (`blocks/sensor/`) — Pure domain-agnostic inference
+- Receives scalar values — knows nothing about temperature, HVAC, or vents
+- Three inference layers:
+  1. **Sensing**: Rolling buffer + least-squares slope estimation (dV/dt)
+  2. **Prediction**: TTI = (threshold - current) / (rate of change) → urgency = 1/TTI
+  3. **Communication**: Gossip protocol propagates urgency to neighbors
+- Swap the interface to read CO2 or humidity — the sensor network works identically
 
-3. **Actuation Layer** — Resource allocation
-   - Proportional allocation: each zone gets cooling proportional to its urgency
-   - Shared resource budget constraint (Q_total)
-   - Edge policy: local decisions, AoI = 0
-   - Centralized baseline: polling delay, AoI > 0
+**Vent Routing**: With fixed total airflow (`Q_total`), the interface redistributes cooling from empty/cool rooms to rooms with high urgency. Edge policy makes this decision locally (AoI=0); centralized baseline polls with network delay (AoI>0).
 
 ## Quick Start
 
@@ -33,7 +33,7 @@ The system cleanly separates concerns into three layers:
 conda activate ece659
 conda install -n ece659 numpy pytest matplotlib networkx jsonschema pyvista -c conda-forge
 
-# Run all tests (179 tests)
+# Run all tests (190 tests)
 python -m pytest blocks/ -v
 
 # Run the benchmark (edge vs centralized on university building)
@@ -88,7 +88,8 @@ This section maps each component of the ECE 659 report to the specific files and
 | Rate-of-change monitoring | [blocks/sensor/node.py](blocks/sensor/node.py) — `RollingBuffer`, `slope()`, `dT_dt` | [blocks/sensor/test_sensor.py](blocks/sensor/test_sensor.py) (29 tests) |
 | Prediction (TTI) | [blocks/sensor/node.py](blocks/sensor/node.py) — `tti`, `urgency` properties | Same test file, `TestSensorNodeTTI` class |
 | Gossip consensus | [blocks/sensor/sensor_field.py](blocks/sensor/sensor_field.py) — `_run_gossip()` + [blocks/sensor/gossip.py](blocks/sensor/gossip.py) | Same test file, `TestSensorNodeGossip` class |
-| Resource allocation | [blocks/actuator/controller.py](blocks/actuator/controller.py) — `_evaluate_edge()`, `_evaluate_centralized()` | [blocks/actuator/test_actuator.py](blocks/actuator/test_actuator.py) (11 tests) |
+| Environment I/O (interface) | [blocks/interface/interface.py](blocks/interface/interface.py) — `read_sensors()`, `step()` | [blocks/interface/test_interface.py](blocks/interface/test_interface.py) (14 tests) |
+| Vent routing | [blocks/interface/interface.py](blocks/interface/interface.py) — `_evaluate_edge()`, `_evaluate_centralized()` | Same test file, `TestEdgePolicy` / `TestCentralizedPolicy` classes |
 | Edge vs centralized comparison | [blocks/benchmark/benchmark.py](blocks/benchmark/benchmark.py) — `compare()` | [blocks/benchmark/test_benchmark.py](blocks/benchmark/test_benchmark.py) (7 tests) |
 
 ---
@@ -107,11 +108,11 @@ dT/dt = alpha * nabla^2(T) + Q_heat - Q_cool
 - **Config**: [configs/environments/university_floor.json](configs/environments/university_floor.json) — 5-room university floor (2 classrooms, computer lab, faculty office, study lounge)
 - **Key design**: Environments are JSON-driven. The same code handles any room layout, heat profile, and damper placement.
 
-#### 4b. Sensor Network Topology (Block 3)
+#### 4b. Sensor Network Topology (merged into Sensor block)
 
-Sensors are placed on a grid and connected by a communication graph (edges within radio range). The topology is domain-agnostic — it defines *who can talk to whom*.
+Sensors are placed on a grid and connected by a communication graph (edges within radio range). The topology is domain-agnostic — it defines *who can talk to whom*. Now lives alongside the inference code in the sensor block.
 
-- **Files**: [blocks/network/sensor_network.py](blocks/network/sensor_network.py), [blocks/network/placement.py](blocks/network/placement.py)
+- **Files**: [blocks/sensor/sensor_network.py](blocks/sensor/sensor_network.py), [blocks/sensor/placement.py](blocks/sensor/placement.py)
 - **Metrics**: Connectivity, coverage, degree distribution, clustering coefficient
 
 #### 4c. Sensing — Rate-of-Change Monitoring (Block 4, Layer 1)
@@ -146,27 +147,39 @@ Multi-round gossip spreads urgency information through the sensor mesh:
 - **File**: [blocks/sensor/sensor_field.py](blocks/sensor/sensor_field.py) — `_run_gossip()` method
 - **Bandwidth control**: `talk_threshold` prevents unnecessary chatter when conditions are stable
 
-#### 4f. Actuation — Resource Allocation (Block 5)
+#### 4f. Environment Interface — I/O Boundary (Block 5)
+
+The interface block is the **only** component that touches both the physical environment (World) and the inference network (SensorField). It enforces a clean separation:
+
+- **Input side**: Reads `World.T` at sensor positions → feeds scalar `(timestamp, value)` pairs to the SensorField. The sensor network never sees the temperature array directly.
+- **Output side**: Reads urgency from the SensorField → translates to vent routing commands → applies openings to World dampers.
+
+This separation means the sensor network is genuinely domain-agnostic — you could swap the interface to read CO2 or humidity without changing a single line in the sensor block.
+
+**Vent routing with fixed airflow budget**: With a fixed `Q_total`, the interface redistributes airflow from low-urgency rooms (empty/cool) to high-urgency rooms (occupied/heating). Closing vents to empty rooms saves energy while maintaining comfort in active rooms.
 
 **Edge policy** (Aether-Edge):
-- Each VAV damper collects urgency from nearby sensors (including gossip-propagated neighbor urgencies)
-- Proportional allocation: `opening_i = urgency_i / total_urgency`
+- Each vent's opening = `urgency_i / total_urgency`
 - All decisions are local — **AoI = 0**
 
 **Centralized policy** (Baseline):
 - Central controller polls sensors at `polling_interval` (+ random jitter)
-- Computes same proportional allocation, but with stale data
+- Same allocation, but with stale data
 - **AoI = polling_interval + jitter + compute_delay** (~7.6 seconds typical)
 
-- **File**: [blocks/actuator/controller.py](blocks/actuator/controller.py)
-- **Edge**: `_evaluate_edge()` (lines 127-171)
-- **Centralized**: `_evaluate_centralized()` (lines 173-225)
+- **File**: [blocks/interface/interface.py](blocks/interface/interface.py)
+- **Read sensors**: `read_sensors()` — extracts scalar values from World
+- **Full cycle**: `step()` — read → feed sensor network → route airflow → actuate
+- **Edge**: `_evaluate_edge()`
+- **Centralized**: `_evaluate_centralized()`
 
 #### 4g. Simulation Loop (Block 6)
 
-Each timestep: `world.step()` -> `sensor_field.step()` -> `actuator.evaluate()`
+Each timestep: `world.step()` -> `interface.step(world)`
 
-The simulation accumulates comfort violation (time-integrated overshoot) and energy usage. Both edge and centralized modes use the same loop — the difference is entirely in the actuator's decision-making speed.
+The interface call handles the full cycle: read environment → feed sensor network → get urgency → route airflow → actuate vents. The sensor network never sees the World object.
+
+The simulation accumulates comfort violation (time-integrated overshoot) and energy usage. Both edge and centralized modes use the same loop — the difference is entirely in the interface's data freshness.
 
 - **File**: [blocks/simulation/simulation.py](blocks/simulation/simulation.py)
 
@@ -205,10 +218,10 @@ The benchmark runs the same environment with both policies (edge and centralized
 |--------|--------------|-----------------|
 | Comfort violation | [simulation.py](blocks/simulation/simulation.py) `_comfort_violation_integral` | Time-integrated overshoot (lower = better comfort) |
 | Cumulative energy | [simulation.py](blocks/simulation/simulation.py) `_energy_integral` | Total cooling energy consumed |
-| Age of Information | [controller.py](blocks/actuator/controller.py) `mean_age_of_information` | Average data staleness at decision time |
+| Age of Information | [interface.py](blocks/interface/interface.py) `mean_age_of_information` | Average data staleness at decision time |
 | Max overshoot | [world.py](blocks/world/world.py) `max_overshoot()` | Peak degrees above setpoint |
 | Zone temperatures | [world.py](blocks/world/world.py) `zone_mean_temperature()` | Per-zone thermal state |
-| Gossip messages | [controller.py](blocks/actuator/controller.py) `total_messages` | Communication overhead |
+| Gossip messages | [interface.py](blocks/interface/interface.py) `total_messages` | Communication overhead |
 | Comfort improvement % | [benchmark.py](blocks/benchmark/benchmark.py) `compare()` | Edge vs centralized comfort delta |
 | Energy savings % | [benchmark.py](blocks/benchmark/benchmark.py) `compare()` | Edge vs centralized energy delta |
 
@@ -229,19 +242,20 @@ The `ExperimentRunner` supports sweeping any config parameter (sensor density, c
 
 ### 6. Testing and Validation
 
-179 unit + integration tests verify correctness at every level:
+190 unit + integration tests verify correctness at every level:
 
 | Test Suite | File | Count | What It Validates |
 |-----------|------|-------|-------------------|
-| World physics | [blocks/world/test_world.py](blocks/world/test_world.py) | 37 | Stability, diffusion, cooling, zones |
+| World physics | [blocks/world/test_world.py](blocks/world/test_world.py) | 45 | Stability, diffusion, cooling, zones, occupancy |
 | Visualization | [blocks/visualization/test_visualization.py](blocks/visualization/test_visualization.py) | 7 | Mesh construction, volume rendering |
 | Network topology | [blocks/network/test_network.py](blocks/network/test_network.py) | 24 | Placement, graph, connectivity |
-| Sensor + prediction | [blocks/sensor/test_sensor.py](blocks/sensor/test_sensor.py) | 29 | Buffer, TTI, urgency, gossip |
-| Actuator | [blocks/actuator/test_actuator.py](blocks/actuator/test_actuator.py) | 11 | Edge/centralized policies, AoI |
+| Sensor + prediction | [blocks/sensor/test_sensor.py](blocks/sensor/test_sensor.py) | 27 | Buffer, TTI, urgency, gossip (domain-agnostic) |
+
+| Interface (I/O) | [blocks/interface/test_interface.py](blocks/interface/test_interface.py) | 14 | Read/actuate, edge/centralized policies, AoI |
 | Simulation | [blocks/simulation/test_simulation.py](blocks/simulation/test_simulation.py) | 12 | Full loop, metrics recording |
 | Benchmark | [blocks/benchmark/test_benchmark.py](blocks/benchmark/test_benchmark.py) | 7 | Comparison, independence |
 | Metrics | [blocks/metrics/test_metrics.py](blocks/metrics/test_metrics.py) | 14 | Collection, export, sweeps |
-| **Integration** | [blocks/test_integration.py](blocks/test_integration.py) | **38** | All blocks working together |
+| **Integration** | [blocks/test_integration.py](blocks/test_integration.py) | **40** | All blocks working together |
 
 ```bash
 python -m pytest blocks/ -v
@@ -255,25 +269,26 @@ python -m pytest blocks/ -v
 gas_prediction_network/
 ├── README.md                              # This file (report mapping)
 ├── blocks/
-│   ├── test_integration.py                # Cross-block integration tests (38)
+│   ├── test_integration.py                # Cross-block integration tests (40)
 │   ├── world/                             # Block 1: 3D thermal physics
 │   │   ├── environment.py                 #   JSON config -> grid + zones + dampers
 │   │   ├── world.py                       #   FTCS heat diffusion + cooling
 │   │   └── stability.py                   #   CFL + diffusion stability
 │   ├── visualization/                     # Block 2: 3D PyVista rendering
 │   │   └── renderer.py                    #   Temperature volume + damper markers
-│   ├── network/                           # Block 3: Sensor mesh topology
-│   │   ├── placement.py                   #   Grid/random/manual placement
-│   │   └── sensor_network.py              #   NetworkX graph + coverage metrics
-│   ├── sensor/                            # Block 4: Sensing + Prediction + Gossip
+│   ├── sensor/                            # Sensor network: topology + inference + gossip
+│   │   ├── sensor_network.py              #   NetworkX graph + coverage metrics
+│   │   ├── placement.py                   #   Grid/random/manual sensor placement
 │   │   ├── node.py                        #   RollingBuffer, TTI, urgency (3 layers)
 │   │   ├── gossip.py                      #   NegotiationMessage dataclass
 │   │   └── sensor_field.py                #   Orchestrates sense -> predict -> gossip
-│   ├── actuator/                          # Block 5: Resource allocation
-│   │   └── controller.py                  #   Edge (AoI=0) vs centralized (AoI>0)
-│   ├── simulation/                        # Block 6: Full integration loop
-│   │   └── simulation.py                  #   world -> sensor -> actuator per step
-│   ├── benchmark/                         # Block 7: Edge vs centralized comparison
+│   ├── network/                           # (redirect → blocks/sensor/)
+│   ├── interface/                         # Environment I/O boundary
+│   │   └── interface.py                   #   Read sensors + route airflow + actuate vents
+│   ├── actuator/                          # (redirect → blocks/interface/)
+│   ├── simulation/                        # Full integration loop
+│   │   └── simulation.py                  #   world -> interface (read→infer→actuate)
+│   ├── benchmark/                         # Edge vs centralized comparison
 │   │   └── benchmark.py                   #   Run both, compare metrics
 │   └── metrics/                           # Infrastructure: collection + sweeps
 │       ├── collector.py                   #   MetricsCollector (JSON/CSV export)

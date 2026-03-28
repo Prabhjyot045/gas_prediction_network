@@ -1,8 +1,14 @@
 """
-Unit tests for Block 5 — VAV Damper Controller.
+Unit tests for the Interface block — environment I/O boundary.
+
+Tests that the interface:
+- Reads sensor values from the World (input side)
+- Feeds scalar values to the SensorField (no World coupling in inference)
+- Translates urgency into vent routing commands (output side)
+- Supports edge (AoI=0) and centralized (AoI>0) policies
 
 Run with:
-    python -m pytest blocks/actuator/test_actuator.py -v
+    python -m pytest blocks/interface/test_interface.py -v
 """
 
 from __future__ import annotations
@@ -15,9 +21,9 @@ import pytest
 
 from blocks.world.environment import Environment
 from blocks.world.world import World
-from blocks.network.sensor_network import SensorNetwork
+from blocks.sensor.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import DamperController
+from blocks.interface.interface import EnvironmentInterface
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -73,7 +79,7 @@ def _make_system(policy="edge"):
     world = World(env)
     net = SensorNetwork(env)
     sf = SensorField(env, net, gossip_rounds=2, seed=42)
-    ctrl = DamperController(
+    iface = EnvironmentInterface(
         env, sf, policy=policy,
         proximity_radius=5.0,
         polling_interval=cfg["network"]["polling_interval"],
@@ -81,14 +87,14 @@ def _make_system(policy="edge"):
         compute_delay=cfg["network"]["compute_delay"],
         seed=42,
     )
-    return env, world, sf, ctrl
+    return env, world, sf, iface
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Init tests
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestDamperInit:
+class TestInterfaceInit:
     def test_invalid_policy_raises(self):
         cfg = _make_config()
         path = _write_config(cfg)
@@ -96,14 +102,34 @@ class TestDamperInit:
         net = SensorNetwork(env)
         sf = SensorField(env, net, seed=42)
         with pytest.raises(ValueError, match="Unknown policy"):
-            DamperController(env, sf, policy="magic")
+            EnvironmentInterface(env, sf, policy="magic")
 
     def test_damper_sensor_mapping(self):
-        _, _, _, ctrl = _make_system()
-        assert "vav_A" in ctrl.damper_sensors
-        assert "vav_B" in ctrl.damper_sensors
-        # Each damper should have at least one nearby sensor
-        assert len(ctrl.damper_sensors["vav_A"]) > 0
+        _, _, _, iface = _make_system()
+        assert "vav_A" in iface.damper_sensors
+        assert "vav_B" in iface.damper_sensors
+        assert len(iface.damper_sensors["vav_A"]) > 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Input side: reading from environment
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestInterfaceRead:
+    def test_read_sensors_returns_dict(self):
+        _, world, sf, iface = _make_system()
+        readings = iface.read_sensors(world)
+        assert len(readings) == len(sf.nodes)
+        for name, val in readings.items():
+            assert isinstance(val, float)
+
+    def test_read_sensors_matches_world(self):
+        _, world, sf, iface = _make_system()
+        world.run(10)
+        readings = iface.read_sensors(world)
+        for name, node in sf.nodes.items():
+            expected = float(world.T[node.position])
+            assert readings[name] == pytest.approx(expected)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -111,42 +137,38 @@ class TestDamperInit:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestEdgePolicy:
-    def test_evaluate_returns_openings(self):
-        _, world, sf, ctrl = _make_system("edge")
+    def test_step_returns_openings(self):
+        _, world, sf, iface = _make_system("edge")
         world.step()
-        sf.step(world)
-        openings = ctrl.evaluate(world)
+        openings = iface.step(world)
         assert "vav_A" in openings
         assert "vav_B" in openings
         for v in openings.values():
             assert 0.0 <= v <= 1.0
 
     def test_heated_room_gets_more_cooling(self):
-        env, world, sf, ctrl = _make_system("edge")
+        env, world, sf, iface = _make_system("edge")
         room_A = env.rooms["room_A"]
         # Heat room A a lot to create urgency
         for _ in range(30):
             world.T[room_A.slices] += 0.3
             world.step()
-            sf.step(world)
-        openings = ctrl.evaluate(world)
-        # Room A (heated) should get more cooling than room B
+            iface.step(world)
+        openings = iface.step(world)
         assert openings["vav_A"] >= openings["vav_B"]
 
     def test_edge_aoi_is_zero(self):
-        _, world, sf, ctrl = _make_system("edge")
+        _, world, sf, iface = _make_system("edge")
         world.step()
-        sf.step(world)
-        ctrl.evaluate(world)
-        assert ctrl.mean_age_of_information == 0.0
+        iface.step(world)
+        assert iface.mean_age_of_information == 0.0
 
     def test_actions_logged(self):
-        _, world, sf, ctrl = _make_system("edge")
+        _, world, sf, iface = _make_system("edge")
         world.step()
-        sf.step(world)
-        ctrl.evaluate(world)
-        assert len(ctrl.actions) > 0
-        assert ctrl.actions[0].policy == "edge"
+        iface.step(world)
+        assert len(iface.actions) > 0
+        assert iface.actions[0].policy == "edge"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -154,31 +176,26 @@ class TestEdgePolicy:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestCentralizedPolicy:
-    def test_evaluate_returns_openings(self):
-        _, world, sf, ctrl = _make_system("centralized")
+    def test_step_returns_openings(self):
+        _, world, sf, iface = _make_system("centralized")
         world.step()
-        sf.step(world)
-        openings = ctrl.evaluate(world)
+        openings = iface.step(world)
         assert "vav_A" in openings
         for v in openings.values():
             assert 0.0 <= v <= 1.0
 
     def test_centralized_has_nonzero_aoi(self):
-        _, world, sf, ctrl = _make_system("centralized")
+        _, world, sf, iface = _make_system("centralized")
         for _ in range(10):
             world.step()
-            sf.step(world)
-            ctrl.evaluate(world)
-        # Centralized should accumulate AoI
-        assert ctrl.mean_age_of_information >= 0.0
+            iface.step(world)
+        assert iface.mean_age_of_information >= 0.0
 
     def test_centralized_caches_between_polls(self):
-        _, world, sf, ctrl = _make_system("centralized")
+        _, world, sf, iface = _make_system("centralized")
         world.step()
-        sf.step(world)
-        openings1 = ctrl.evaluate(world)
-        # Immediately evaluate again — should use cache
-        openings2 = ctrl.evaluate(world)
+        openings1 = iface.step(world)
+        openings2 = iface.step(world)
         assert openings1 == openings2
 
 
@@ -186,22 +203,28 @@ class TestCentralizedPolicy:
 # Metrics tests
 # ══════════════════════════════════════════════════════════════════════════
 
-class TestDamperMetrics:
+class TestInterfaceMetrics:
     def test_metrics_dict(self):
-        _, world, sf, ctrl = _make_system("edge")
+        _, world, sf, iface = _make_system("edge")
         world.step()
-        sf.step(world)
-        ctrl.evaluate(world)
-        m = ctrl.metrics()
+        iface.step(world)
+        m = iface.metrics()
         assert "policy" in m
         assert "damper_openings" in m
         assert "total_energy" in m
         assert "mean_age_of_information" in m
 
     def test_energy_accumulates(self):
-        _, world, sf, ctrl = _make_system("edge")
+        _, world, sf, iface = _make_system("edge")
         for _ in range(10):
             world.step()
-            sf.step(world)
-            ctrl.evaluate(world)
-        assert ctrl.total_energy > 0
+            iface.step(world)
+        assert iface.total_energy > 0
+
+    def test_temperature_rmse(self):
+        env, world, sf, iface = _make_system("edge")
+        world.step()
+        iface.step(world)
+        rmse = iface.temperature_rmse(world)
+        # With sensor_sigma=0, RMSE should be ~0
+        assert rmse == pytest.approx(0.0, abs=0.01)

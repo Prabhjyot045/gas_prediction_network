@@ -1,9 +1,12 @@
 """
 Simulation — full integration of all Aether-Edge blocks.
 
-Ties together World, SensorNetwork, SensorField, DamperController, and
-MetricsCollector into a single simulation loop. Supports both edge
-(decentralized) and centralized actuation policies.
+Architecture:
+  World (physics) → Interface (read) → SensorField (infer) → Interface (actuate) → World
+
+The Interface block is the only component that touches both the physical
+environment (World) and the inference network (SensorField). The sensor
+network never sees the World directly.
 """
 
 from __future__ import annotations
@@ -16,9 +19,9 @@ import numpy as np
 
 from blocks.world.environment import Environment
 from blocks.world.world import World
-from blocks.network.sensor_network import SensorNetwork
+from blocks.sensor.sensor_network import SensorNetwork
 from blocks.sensor.sensor_field import SensorField
-from blocks.actuator.controller import DamperController
+from blocks.interface.interface import EnvironmentInterface
 from blocks.metrics.collector import MetricsCollector
 
 
@@ -54,7 +57,7 @@ class Simulation:
             buffer_seconds=buffer_seconds,
             seed=seed,
         )
-        self.actuator = DamperController(
+        self.interface = EnvironmentInterface(
             self.env, self.sensor_field,
             policy=actuator_policy,
             proximity_radius=proximity_radius,
@@ -80,11 +83,10 @@ class Simulation:
     def step(self) -> None:
         """Advance the simulation by one time step.
 
-        Order: world physics -> sensor sensing -> actuator evaluation.
+        Order: world physics -> interface (read → infer → actuate).
         """
         self.world.step()
-        self.sensor_field.step(self.world)
-        self.actuator.evaluate(self.world)
+        self.interface.step(self.world)
         self._comfort_violation_integral += self.world.comfort_violation()
         self._energy_integral += self.world.total_cooling_energy()
 
@@ -113,16 +115,16 @@ class Simulation:
         """Record a snapshot of metrics from all blocks."""
         step = self.world.step_count
         world_m = self.world.metrics()
-        sensor_m = self.sensor_field.metrics(self.world)
-        actuator_m = self.actuator.metrics()
+        sensor_m = self.sensor_field.metrics()
+        interface_m = self.interface.metrics()
 
         record = {
             **world_m,
-            "temperature_rmse": sensor_m.get("temperature_rmse"),
+            "temperature_rmse": round(self.interface.temperature_rmse(self.world), 6),
             "n_heating": sensor_m["n_heating"],
             "urgency_coverage": sensor_m["urgency_coverage"],
             "total_gossip_messages": sensor_m["total_messages_sent"],
-            "mean_age_of_information": actuator_m["mean_age_of_information"],
+            "mean_age_of_information": interface_m["mean_age_of_information"],
             "cumulative_comfort_violation": round(self._comfort_violation_integral, 6),
             "cumulative_energy": round(self._energy_integral, 6),
         }
@@ -135,8 +137,7 @@ class Simulation:
         self.collector.record_scalar("mean_temperature", world_m["mean_temperature"], step)
         self.collector.record_scalar("cumulative_comfort_violation", self._comfort_violation_integral, step)
         self.collector.record_scalar("cumulative_energy", self._energy_integral, step)
-        if sensor_m.get("temperature_rmse") is not None:
-            self.collector.record_scalar("temperature_rmse", sensor_m["temperature_rmse"], step)
+        self.collector.record_scalar("temperature_rmse", record["temperature_rmse"], step)
 
     # ── Convenience ────────────────────────────────────────────────────
 
@@ -150,15 +151,15 @@ class Simulation:
 
     def summary(self) -> str:
         w = self.world
-        a = self.actuator
+        iface = self.interface
         return (
             f"Simulation: {w.step_count} steps, t={w.time:.4f}s\n"
-            f"  Policy: {a.policy}\n"
+            f"  Policy: {iface.policy}\n"
             f"  Max overshoot: {w.max_overshoot():.4f}C\n"
             f"  Cumulative comfort violation: {self._comfort_violation_integral:.4f}\n"
             f"  Cumulative energy: {self._energy_integral:.4f}\n"
-            f"  Mean AoI: {a.mean_age_of_information:.4f}s\n"
-            f"  Gossip messages: {a.total_messages}"
+            f"  Mean AoI: {iface.mean_age_of_information:.4f}s\n"
+            f"  Gossip messages: {iface.total_messages}"
         )
 
     @classmethod

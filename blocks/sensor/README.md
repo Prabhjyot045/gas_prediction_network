@@ -1,131 +1,133 @@
-# Block 4: Sensor — Kalman Filter + Gossip Protocol
+# Sensor Network — Topology + Inference + Gossip
 
 ## Overview
 
-Event-driven sensor nodes that read concentration from the World, apply Kalman filtering for noise reduction, estimate gas flow velocity from gradients, and propagate predictions through the sensor network via a gossip protocol. This is the core novel component of VDPA: **distributed predictive actuation via gossip-propagated gradient fields**.
+The sensor block combines **mesh topology** (placement, communication graph) and **domain-agnostic inference** (rate-of-change monitoring, TTI prediction, gossip consensus) into a single unified package. Sensor nodes receive scalar `(timestamp, value)` pairs from the interface layer and perform three-layer inference without any knowledge of the physical environment.
+
+### Three Inference Layers
+
+1. **Sensing**: Rolling buffer + least-squares slope estimation (dV/dt)
+2. **Prediction**: TTI = (threshold - current) / (rate of change), urgency = 1/TTI
+3. **Communication**: Multi-hop gossip propagates urgency to neighbors for distributed consensus
+
+### Mesh Topology
+
+Sensors are placed via configurable strategies (grid, random, manual) and connected by a NetworkX communication graph where edges link nodes within a configurable radius.
 
 ## How to Run
 
 ```bash
 conda activate ece659
 
-# Demo: Kalman filter + gossip visualization
-python -m blocks.sensor.demo --config configs/environments/default_maze.json
-
-# More simulation steps
-python -m blocks.sensor.demo --config configs/environments/default_maze.json --steps 300
-
-# Multi-hop gossip (faster prediction propagation)
-python -m blocks.sensor.demo --config configs/environments/default_maze.json --gossip-rounds 3
-
-# Run tests
+# Run tests (all sensor + topology tests)
 python -m pytest blocks/sensor/test_sensor.py -v
+
+# Network topology tests (backward compat location)
+python -m pytest blocks/network/test_network.py -v
 ```
 
-## Architecture
+## Modules
 
-### SensorNode
-
-Each node maintains:
-- **Kalman filter** (FilterPy) with state `[φ, dφ/dt]` for noise-corrected concentration tracking
-- **Spatial gradient** `∇φ` via central differences on the world's concentration field
-- **Flow velocity estimate** `v̂ = -(dφ/dt) / |∇φ|² × ∇φ` — the apparent velocity of the gas front
-- **Prediction table** mapping gossip origins to predicted arrival times
-
-### Gossip Protocol
-
-When a node detects gas above a threshold:
-1. It creates a `GossipMessage` carrying its concentration, gradient, and velocity
-2. The message is delivered to all NetworkX neighbors
-3. Receiving nodes compute predicted arrival time: `T = timestamp + distance / |velocity|`
-4. If the prediction is novel (earlier than existing), the message is forwarded further
-5. Multi-hop propagation controlled by `gossip_rounds` (per step) and `max_hops` (total)
-
-### SensorField
-
-High-level manager that orchestrates the per-step cycle:
-1. **Sense**: all nodes read `world.phi` at their position, add noise, run Kalman update
-2. **Gradient**: compute spatial gradient and estimate flow velocity
-3. **Gossip**: propagate predictions through the network
+| File | Purpose |
+|------|---------|
+| `node.py` | `RollingBuffer`, `SensorNode` — per-node inference (buffer, TTI, urgency) |
+| `gossip.py` | `NegotiationMessage` — inter-node urgency message |
+| `sensor_field.py` | `SensorField` — orchestrates sense -> predict -> gossip cycle |
+| `sensor_network.py` | `SensorNetwork` — NetworkX graph + topology metrics |
+| `placement.py` | Grid/random/manual sensor placement strategies |
+| `test_sensor.py` | 27 unit tests for inference pipeline |
 
 ## Configuration
 
-Block 4 uses the existing `sensors` and `noise` sections from the environment JSON:
+The `sensors` section of the environment JSON controls placement and communication:
 
 ```json
 "sensors": {
   "placement": "grid",
-  "spacing": 3,
-  "z_levels": [2],
-  "communication_radius": 5.0
-},
-"noise": {
-  "sensor_sigma": 0.05,
-  "source_rate_sigma": 0.0
+  "spacing": 4,
+  "z_levels": [1],
+  "communication_radius": 6.0
 }
 ```
 
-Additional `SensorField` parameters:
+### Placement Strategies
+
+| Strategy | Fields | Description |
+|----------|--------|-------------|
+| `grid` | `spacing`, `z_levels` | Uniform grid at given spacing on specified z-levels |
+| `random` | `count`, `seed`, `z_levels` | N random non-wall cells (reproducible with seed) |
+| `manual` | `nodes` | Explicit list: `[{"name": "s1", "position": {"x":3, "y":3, "z":1}}]` |
+
+All positions are validated against the wall mask.
+
+### SensorField Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `gossip_rounds` | 1 | Gossip hops per simulation step (1 = realistic delay) |
-| `detection_threshold` | 0.01 | Minimum concentration to trigger gossip |
+| `gossip_rounds` | 1 | Gossip hops per simulation step |
+| `talk_threshold` | 0.01 | Minimum \|dV/dt\| to trigger gossip |
 | `max_hops` | 10 | Maximum relay hops for a single message |
-| `process_noise_var` | 0.01 | Kalman process noise variance |
+| `buffer_seconds` | 30.0 | Rolling buffer window in seconds |
 | `seed` | None | RNG seed for reproducible noise |
 
 ## API
 
 ```python
 from blocks.world import Environment, World
-from blocks.network import SensorNetwork
-from blocks.sensor import SensorField
+from blocks.sensor import SensorNetwork, SensorField
 
-env = Environment("configs/environments/default_maze.json")
+env = Environment("configs/environments/university_floor.json")
 world = World(env)
 network = SensorNetwork(env)
-field = SensorField(env, network, gossip_rounds=1, seed=42)
+field = SensorField(env, network, gossip_rounds=2, seed=42)
 
-# Per-step cycle
-for step in range(200):
-    world.step()
-    field.step(world)
+# Domain-agnostic step: feed scalar readings
+readings = {name: float(world.T[node.position]) for name, node in field.nodes.items()}
+field.step(readings, timestamp=world.time)
 
 # Query predictions
-arrivals = field.get_predicted_arrivals()  # {node_name: arrival_time}
-alerts = field.get_alert_nodes(world.time, horizon=5.0)  # nodes expecting gas soon
+urgencies = field.get_urgencies()    # {node_name: urgency}
+ttis = field.get_ttis()              # {node_name: TTI_seconds}
+alerts = field.get_alert_nodes()     # nodes predicting breach within 30s
 
-# Metrics
-print(field.metrics(world))
+# Topology info
+print(network.n_nodes, network.n_edges)
+print(network.is_connected())
+print(network.metrics())
 
-# Individual node access
-for name, node in field.nodes.items():
-    print(node.metrics())
+# Inference metrics
+print(field.metrics())
 ```
 
-## Metrics
+## Topology Metrics
+
+`SensorNetwork.metrics()` returns:
+
+| Metric | Description |
+|--------|-------------|
+| `n_nodes` | Total sensor count |
+| `n_edges` | Communication links |
+| `is_connected` | Whether all nodes can reach each other |
+| `connected_components` | Number of disconnected subgraphs |
+| `average_degree` | Mean connections per node |
+| `diameter` | Longest shortest path (inf if disconnected) |
+| `average_path_length` | Mean shortest path length |
+| `clustering_coefficient` | Local clustering average |
+| `coverage` | Fraction of non-wall cells within sensing radius |
+| `degree_distribution` | Histogram: `{degree: count}` |
+
+## Inference Metrics
 
 `SensorField.metrics()` returns:
 
 | Metric | Description |
 |--------|-------------|
 | `n_nodes` | Total sensor count |
-| `n_detecting` | Nodes with concentration above threshold |
-| `n_with_predictions` | Nodes that have received gossip predictions |
-| `prediction_coverage` | Fraction of nodes with predictions |
+| `n_heating` | Nodes with dV/dt above threshold |
+| `n_with_urgency` | Nodes predicting setpoint breach |
+| `urgency_coverage` | Fraction of nodes with urgency |
 | `total_messages_sent` | Cumulative gossip messages generated |
 | `total_messages_received` | Cumulative messages received |
-| `mean_filtered_concentration` | Average Kalman-filtered reading |
-| `mean_velocity_magnitude` | Average estimated flow speed |
-| `earliest_global_arrival` | Earliest predicted arrival across all nodes |
-| `mean_predicted_arrival` | Mean predicted arrival time |
-| `concentration_rmse` | RMSE vs ground truth (if world provided) |
-
-`SensorNode.metrics()` returns per-node details including `filtered_concentration`, `gradient_magnitude`, `velocity_magnitude`, `earliest_predicted_arrival`, and message counts.
-
-## Run Tests
-
-```bash
-python -m pytest blocks/sensor/test_sensor.py -v
-```
+| `mean_value` | Average filtered reading across nodes |
+| `mean_dT_dt` | Average rate of change |
+| `min_tti` / `mean_tti` | Time-to-impact statistics |

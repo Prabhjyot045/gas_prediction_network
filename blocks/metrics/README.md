@@ -12,13 +12,13 @@ Accumulates structured metrics from simulation runs.
 from blocks.metrics import MetricsCollector
 
 mc = MetricsCollector("my_experiment")
-mc.set_metadata(config="default_maze.json", strategy="vdpa")
+mc.set_metadata(config="university_floor.json", strategy="edge")
 
 # Per-step recording
 for step in range(100):
     world.step()
     mc.record(world.metrics(), step=step)
-    mc.record_scalar("total_mass", world.total_mass(), step=step)
+    mc.record_scalar("mean_temperature", world.metrics()["mean_temperature"], step=step)
 
 # Export
 mc.save_json("results/run_001.json")
@@ -38,13 +38,11 @@ df = mc.to_dataframe()  # requires pandas
 
 Drives parameter sweeps from a JSON config file.
 
-```bash
-# Run a sensor density sweep
-python -c "
+```python
 from blocks.metrics import ExperimentRunner
 from blocks.world.environment import Environment
 from blocks.world.world import World
-from blocks.network import SensorNetwork
+from blocks.sensor import SensorNetwork
 
 def run(env_config, sim_config, collector):
     import tempfile, json
@@ -61,7 +59,6 @@ def run(env_config, sim_config, collector):
 
 runner = ExperimentRunner('configs/experiments/sweep_sensor_density.json')
 runner.run(run)
-"
 ```
 
 ### Experiment Config Format
@@ -69,7 +66,7 @@ runner.run(run)
 ```json
 {
   "name": "sensor_density_sweep",
-  "base_environment": "configs/environments/default_maze.json",
+  "base_environment": "configs/environments/university_floor.json",
   "parameters": {
     "sensors.spacing": [2, 3, 4, 5, 6],
     "sensors.communication_radius": [3.0, 5.0, 7.0]
@@ -82,21 +79,17 @@ runner.run(run)
 }
 ```
 
-- `parameters`: dot-notation keys that patch the base environment JSON
-- Cartesian product of all parameter values = total number of runs
-- Each run gets its own `MetricsCollector` and output JSON
-
 ## Metrics Convention
 
 Every block exposes metrics via a `metrics() -> dict` method:
 
 | Block | Method | Key metrics |
 |-------|--------|-------------|
-| World | `world.metrics()` | `step`, `time`, `total_mass`, `contaminated_volume`, `peak_concentration` |
-| Network | `network.metrics()` | `n_nodes`, `n_edges`, `diameter`, `coverage`, `clustering_coefficient` |
-| Sensor | `node.metrics()` / `sensor_field.metrics(world)` | `filtered_concentration`, `gradient_magnitude`, `earliest_predicted_arrival`, `messages_sent`, `concentration_rmse`, `prediction_coverage` |
-| Actuator | `actuator.metrics()` | `doors_closed`, `response_time`, `first_detection_time`, `first_actuation_time`, `actuation_log` |
-| Benchmark | `benchmark.run()` | `cumulative_contamination`, `contamination_reduction_pct`, `response_time` |
+| World | `world.metrics()` | `step`, `time`, `mean_temperature`, `max_overshoot`, `total_overshoot` |
+| Sensor Network | `network.metrics()` | `n_nodes`, `n_edges`, `diameter`, `coverage`, `clustering_coefficient` |
+| Sensor Field | `field.metrics()` | `n_heating`, `urgency_coverage`, `total_messages_sent`, `mean_dT_dt`, `min_tti` |
+| Interface | `interface.metrics()` | `damper_openings`, `total_energy`, `mean_age_of_information` |
+| Benchmark | `benchmark.run()` | `comfort_improvement_pct`, `energy_savings_pct`, `edge_aoi`, `centralized_aoi` |
 
 ## Run Tests
 

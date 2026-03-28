@@ -88,7 +88,6 @@ class TestBenchmarkRun:
         b = _make_benchmark()
         edge_sim = b.run_edge()
         cent_sim = b.run_centralized()
-        # Different world instances
         assert edge_sim.world is not cent_sim.world
 
 

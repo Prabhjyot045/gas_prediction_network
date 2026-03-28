@@ -20,7 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from blocks.world.environment import Environment
-from blocks.network.sensor_network import SensorNetwork
+from blocks.sensor.sensor_network import SensorNetwork
 
 
 def parse_args() -> argparse.Namespace:

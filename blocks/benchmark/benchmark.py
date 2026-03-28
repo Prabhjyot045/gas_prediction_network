@@ -125,8 +125,8 @@ class Benchmark:
                 "cumulative_comfort_violation": round(edge_cv, 4),
                 "cumulative_energy": round(edge_energy, 4),
                 "max_overshoot": round(edge_sim.world.max_overshoot(), 4),
-                "mean_aoi": round(edge_sim.actuator.mean_age_of_information, 4),
-                "total_messages": edge_sim.actuator.total_messages,
+                "mean_aoi": round(edge_sim.interface.mean_age_of_information, 4),
+                "total_messages": edge_sim.interface.total_messages,
                 "zone_temperatures": {
                     z: round(edge_sim.world.zone_mean_temperature(z), 4)
                     for z in edge_sim.env.rooms
@@ -136,8 +136,8 @@ class Benchmark:
                 "cumulative_comfort_violation": round(cent_cv, 4),
                 "cumulative_energy": round(cent_energy, 4),
                 "max_overshoot": round(cent_sim.world.max_overshoot(), 4),
-                "mean_aoi": round(cent_sim.actuator.mean_age_of_information, 4),
-                "total_messages": cent_sim.actuator.total_messages,
+                "mean_aoi": round(cent_sim.interface.mean_age_of_information, 4),
+                "total_messages": cent_sim.interface.total_messages,
                 "zone_temperatures": {
                     z: round(cent_sim.world.zone_mean_temperature(z), 4)
                     for z in cent_sim.env.rooms
@@ -146,10 +146,10 @@ class Benchmark:
             "comparison": {
                 "comfort_improvement_pct": round(comfort_improvement, 2),
                 "energy_savings_pct": round(energy_savings, 2),
-                "edge_aoi": round(edge_sim.actuator.mean_age_of_information, 4),
-                "centralized_aoi": round(cent_sim.actuator.mean_age_of_information, 4),
-                "edge_messages": edge_sim.actuator.total_messages,
-                "centralized_messages": cent_sim.actuator.total_messages,
+                "edge_aoi": round(edge_sim.interface.mean_age_of_information, 4),
+                "centralized_aoi": round(cent_sim.interface.mean_age_of_information, 4),
+                "edge_messages": edge_sim.interface.total_messages,
+                "centralized_messages": cent_sim.interface.total_messages,
             },
         }
 
