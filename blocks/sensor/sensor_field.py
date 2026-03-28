@@ -1,15 +1,19 @@
 """
 SensorField — collection of sensor nodes with gossip-based distributed consensus.
 
-Orchestrates the three-layer pipeline across all nodes each timestep:
+**Domain-agnostic**: This module performs pure inference. It receives scalar
+readings from an external interface and orchestrates the three-layer pipeline:
 
   sense (rate-of-change monitoring)
     -> predict (TTI + urgency computation)
     -> gossip (multi-hop urgency propagation for neighborhood consensus)
 
 The gossip protocol is bandwidth-efficient: nodes only transmit when they
-detect a meaningful rate of change (|dT/dt| > talk_threshold). This makes
-the network self-regulating — quiet rooms stay quiet on the network.
+detect a meaningful rate of change (|dV/dt| > talk_threshold). This makes
+the network self-regulating — quiet areas stay quiet on the network.
+
+The interface layer (blocks/interface/) is responsible for reading the physical
+environment, feeding values here, and translating urgency back into actions.
 """
 
 from __future__ import annotations
@@ -23,8 +27,7 @@ from .gossip import NegotiationMessage
 
 if TYPE_CHECKING:
     from blocks.world.environment import Environment
-    from blocks.world.world import World
-    from blocks.network.sensor_network import SensorNetwork
+    from .sensor_network import SensorNetwork
 
 
 class SensorField:
@@ -58,7 +61,6 @@ class SensorField:
             self.nodes[name] = SensorNode(
                 name=name,
                 position=pos,
-                dx=env.dx,
                 dt=env.dt,
                 setpoint=setpoint,
                 buffer_seconds=buffer_seconds,
@@ -70,25 +72,26 @@ class SensorField:
 
     # ── Main loop ──────────────────────────────────────────────────────
 
-    def step(self, world: World) -> None:
-        """Run one full sense -> buffer -> gradient -> gossip cycle."""
-        T = world.T
-        walls = self.env.walls
-        timestamp = world.time
+    def step(self, readings: dict[str, float], timestamp: float) -> None:
+        """Run one full sense -> predict -> gossip cycle.
 
+        Parameters
+        ----------
+        readings : dict[str, float]
+            Mapping of node_name -> scalar value, provided by the interface layer.
+        timestamp : float
+            Current simulation time.
+        """
         # Clear inboxes from previous step
         for node in self.nodes.values():
             node.clear_inbox()
 
-        # 1. Sense: all nodes read temperature + buffer update
-        for node in self.nodes.values():
-            node.sense(T, timestamp)
+        # 1. Sense: feed each node its reading
+        for name, value in readings.items():
+            if name in self.nodes:
+                self.nodes[name].sense(value, timestamp)
 
-        # 2. Compute spatial gradients
-        for node in self.nodes.values():
-            node.compute_gradient(T, walls)
-
-        # 3. Gossip propagation
+        # 2. Gossip propagation
         self._run_gossip(timestamp)
 
         self._step_count += 1
@@ -96,7 +99,7 @@ class SensorField:
     def _run_gossip(self, timestamp: float) -> None:
         """Execute gossip propagation with configurable hop rounds.
 
-        Round 0: nodes with |dT/dt| > talk_threshold generate messages.
+        Round 0: nodes with |dV/dt| > talk_threshold generate messages.
         Round 1+: forwarded messages propagate one additional hop each round.
         """
         pending: dict[str, list[NegotiationMessage]] = {}
@@ -146,21 +149,9 @@ class SensorField:
             if node.tti < horizon
         ]
 
-    def temperature_rmse(self, world: World) -> float:
-        """RMSE between noisy readings and true temperature."""
-        errors_sq = []
-        for node in self.nodes.values():
-            true_val = float(world.T[node.position])
-            est_val = node.filtered_temperature
-            errors_sq.append((true_val - est_val) ** 2)
-
-        if not errors_sq:
-            return 0.0
-        return float(np.sqrt(np.mean(errors_sq)))
-
     # ── Metrics ────────────────────────────────────────────────────────
 
-    def metrics(self, world: World | None = None) -> dict[str, Any]:
+    def metrics(self) -> dict[str, Any]:
         """Return aggregate metrics for reporting."""
         n_heating = sum(
             1 for n in self.nodes.values()
@@ -189,8 +180,8 @@ class SensorField:
             ) if self.nodes else 0.0,
             "total_messages_sent": total_sent,
             "total_messages_received": total_received,
-            "mean_temperature": round(float(np.mean([
-                n.filtered_temperature for n in self.nodes.values()
+            "mean_value": round(float(np.mean([
+                n.filtered_value for n in self.nodes.values()
             ])), 4) if self.nodes else 0.0,
             "mean_dT_dt": round(float(np.mean([
                 n.dT_dt for n in self.nodes.values()
@@ -200,8 +191,5 @@ class SensorField:
         if finite_ttis:
             result["min_tti"] = round(min(finite_ttis), 4)
             result["mean_tti"] = round(float(np.mean(finite_ttis)), 4)
-
-        if world is not None:
-            result["temperature_rmse"] = round(self.temperature_rmse(world), 6)
 
         return result

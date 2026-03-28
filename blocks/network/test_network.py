@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 
 from blocks.world.environment import Environment
-from blocks.network.sensor_network import SensorNetwork
-from blocks.network.placement import grid_placement, random_placement, manual_placement
+from blocks.sensor.sensor_network import SensorNetwork
+from blocks.sensor.placement import grid_placement, random_placement, manual_placement
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

@@ -84,25 +84,29 @@ class World:
         return lap
 
     def _inject_heat(self) -> None:
-        """Add heat from active sources (distributed uniformly over zone cells)."""
+        """Add heat from active sources (distributed uniformly over zone cells).
+
+        Uses ``current_rate(t)`` which respects occupancy profiles — the heat
+        rate changes over time as people enter and leave rooms.
+        """
         for src in self.env.heat_sources:
-            if src.is_active(self.time):
+            rate = src.current_rate(self.time)
+            if rate > 0:
                 room = self.env.rooms[src.zone]
                 zone_mask = ~self.env.walls[room.slices]
                 n_cells = int(np.sum(zone_mask))
                 if n_cells > 0:
-                    # Distribute rate uniformly across zone
-                    self.T[room.slices][zone_mask] += src.rate * self.env.dt
+                    self.T[room.slices][zone_mask] += rate * self.env.dt
 
     def _apply_cooling(self) -> None:
-        """Apply VAV damper cooling at damper positions.
+        """Apply VAV damper cooling distributed across each zone.
 
-        Cooling pulls local temperature toward supply temperature,
-        proportional to damper flow:
+        Each damper supplies cooled air to its entire zone (not just the
+        damper position). The cooling rate per cell pulls temperature
+        toward supply temperature:
 
-            T_new = T - flow * (T - T_supply) * dt
+            T_new = T - (flow / n_cells) * (T - T_supply) * dt
 
-        where flow is the damper's current cooling capacity.
         Total cooling across all dampers is capped at Q_total.
         """
         # Compute total requested flow
@@ -117,15 +121,20 @@ class World:
         T_supply = self.env.supply_temperature
 
         for damper in self.env.dampers.values():
-            pos = damper.position
-            if self.env.walls[pos]:
+            room = self.env.rooms[damper.zone]
+            zone_mask = ~self.env.walls[room.slices]
+            n_cells = int(np.sum(zone_mask))
+            if n_cells == 0:
                 continue
+
             flow = damper.current_flow * scale
-            # Cool toward supply temperature (clamped to prevent overshoot)
-            delta = flow * (self.T[pos] - T_supply) * self.env.dt
-            max_delta = max(0.0, self.T[pos] - T_supply)
-            delta = min(delta, max_delta)
-            self.T[pos] -= delta
+            # Per-cell cooling distributed across zone
+            zone_T = self.T[room.slices][zone_mask]
+            delta = (flow / n_cells) * (zone_T - T_supply) * self.env.dt
+            # Clamp: can't cool below supply temperature
+            max_delta = np.maximum(0.0, zone_T - T_supply)
+            delta = np.minimum(delta, max_delta)
+            self.T[room.slices][zone_mask] -= delta
 
     def _enforce_walls(self) -> None:
         """Set wall cells to ambient temperature (walls are thermally neutral)."""

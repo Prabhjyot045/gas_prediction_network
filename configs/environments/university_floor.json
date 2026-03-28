@@ -1,7 +1,7 @@
 {
   "grid": {
-    "nx": 42,
-    "ny": 32,
+    "nx": 46,
+    "ny": 30,
     "nz": 3,
     "dx": 1.0
   },
@@ -14,27 +14,27 @@
   "rooms": [
     {
       "name": "classroom_101",
-      "bounds": { "x_min": 1, "x_max": 14, "y_min": 1, "y_max": 14, "z_min": 0, "z_max": 3 },
+      "bounds": { "x_min": 1, "x_max": 13, "y_min": 1, "y_max": 14, "z_min": 0, "z_max": 3 },
       "setpoint": 22.0
     },
     {
       "name": "classroom_102",
-      "bounds": { "x_min": 1, "x_max": 14, "y_min": 18, "y_max": 31, "z_min": 0, "z_max": 3 },
+      "bounds": { "x_min": 1, "x_max": 13, "y_min": 16, "y_max": 29, "z_min": 0, "z_max": 3 },
       "setpoint": 22.0
     },
     {
       "name": "computer_lab",
-      "bounds": { "x_min": 18, "x_max": 31, "y_min": 1, "y_max": 14, "z_min": 0, "z_max": 3 },
+      "bounds": { "x_min": 19, "x_max": 31, "y_min": 1, "y_max": 14, "z_min": 0, "z_max": 3 },
       "setpoint": 20.0
     },
     {
-      "name": "faculty_office",
-      "bounds": { "x_min": 18, "x_max": 31, "y_min": 18, "y_max": 31, "z_min": 0, "z_max": 3 },
+      "name": "conference_room",
+      "bounds": { "x_min": 19, "x_max": 31, "y_min": 16, "y_max": 29, "z_min": 0, "z_max": 3 },
       "setpoint": 22.0
     },
     {
-      "name": "study_lounge",
-      "bounds": { "x_min": 33, "x_max": 41, "y_min": 1, "y_max": 31, "z_min": 0, "z_max": 3 },
+      "name": "faculty_office",
+      "bounds": { "x_min": 37, "x_max": 45, "y_min": 1, "y_max": 29, "z_min": 0, "z_max": 3 },
       "setpoint": 22.0
     }
   ],
@@ -42,11 +42,39 @@
   "hallways": [
     {
       "name": "main_corridor",
-      "bounds": { "x_min": 14, "x_max": 18, "y_min": 1, "y_max": 31, "z_min": 0, "z_max": 3 }
+      "bounds": { "x_min": 14, "x_max": 18, "y_min": 1, "y_max": 29, "z_min": 0, "z_max": 3 }
     },
     {
-      "name": "east_corridor",
-      "bounds": { "x_min": 31, "x_max": 33, "y_min": 1, "y_max": 31, "z_min": 0, "z_max": 3 }
+      "name": "south_corridor",
+      "bounds": { "x_min": 32, "x_max": 36, "y_min": 1, "y_max": 29, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_101",
+      "bounds": { "x_min": 13, "x_max": 14, "y_min": 5, "y_max": 9, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_102",
+      "bounds": { "x_min": 13, "x_max": 14, "y_min": 21, "y_max": 25, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_lab",
+      "bounds": { "x_min": 18, "x_max": 19, "y_min": 5, "y_max": 9, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_conf",
+      "bounds": { "x_min": 18, "x_max": 19, "y_min": 21, "y_max": 25, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_lab_south",
+      "bounds": { "x_min": 31, "x_max": 32, "y_min": 5, "y_max": 9, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_conf_south",
+      "bounds": { "x_min": 31, "x_max": 32, "y_min": 21, "y_max": 25, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_office",
+      "bounds": { "x_min": 36, "x_max": 37, "y_min": 12, "y_max": 18, "z_min": 0, "z_max": 3 }
     }
   ],
 
@@ -54,70 +82,114 @@
     {
       "name": "vav_101",
       "zone": "classroom_101",
-      "position": { "x": 7, "y": 7, "z": 1 },
+      "position": { "x": 6, "y": 7, "z": 1 },
       "max_flow": 1.5,
-      "initial_opening": 0.3
+      "initial_opening": 0.1
     },
     {
       "name": "vav_102",
       "zone": "classroom_102",
-      "position": { "x": 7, "y": 24, "z": 1 },
+      "position": { "x": 6, "y": 22, "z": 1 },
       "max_flow": 1.5,
-      "initial_opening": 0.3
+      "initial_opening": 0.1
     },
     {
       "name": "vav_lab",
       "zone": "computer_lab",
-      "position": { "x": 24, "y": 7, "z": 1 },
+      "position": { "x": 25, "y": 7, "z": 1 },
       "max_flow": 2.0,
-      "initial_opening": 0.5
+      "initial_opening": 0.15
+    },
+    {
+      "name": "vav_conf",
+      "zone": "conference_room",
+      "position": { "x": 25, "y": 22, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
     },
     {
       "name": "vav_office",
       "zone": "faculty_office",
-      "position": { "x": 24, "y": 24, "z": 1 },
+      "position": { "x": 41, "y": 15, "z": 1 },
       "max_flow": 1.0,
-      "initial_opening": 0.3
-    },
-    {
-      "name": "vav_lounge",
-      "zone": "study_lounge",
-      "position": { "x": 37, "y": 16, "z": 1 },
-      "max_flow": 1.5,
-      "initial_opening": 0.3
+      "initial_opening": 0.1
     }
   ],
 
   "heat_sources": [
     {
+      "name": "equipment_101",
+      "zone": "classroom_101",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
       "name": "occupancy_101",
       "zone": "classroom_101",
-      "rate": 0.02,
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 300,  "rate": 0.008 },
+        { "time": 3600, "rate": 0.001 },
+        { "time": 3900, "rate": 0.007 },
+        { "time": 7200, "rate": 0.001 }
+      ]
+    },
+    {
+      "name": "equipment_102",
+      "zone": "classroom_102",
+      "rate": 0.001,
       "schedule": { "start": 0, "end": null }
     },
     {
       "name": "occupancy_102",
       "zone": "classroom_102",
-      "rate": 0.025,
-      "schedule": { "start": 0, "end": null }
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 300,  "rate": 0.005 },
+        { "time": 3600, "rate": 0.009 },
+        { "time": 7200, "rate": 0.001 }
+      ]
     },
     {
       "name": "lab_equipment",
       "zone": "computer_lab",
-      "rate": 0.06,
+      "rate": 0.005,
       "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "lab_occupancy",
+      "zone": "computer_lab",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 300,  "rate": 0.004 },
+        { "time": 7200, "rate": 0.002 }
+      ]
+    },
+    {
+      "name": "equipment_conf",
+      "zone": "conference_room",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "meeting_conf",
+      "zone": "conference_room",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.0005 },
+        { "time": 1800, "rate": 0.006  },
+        { "time": 5400, "rate": 0.0005 }
+      ]
     },
     {
       "name": "office_occupancy",
       "zone": "faculty_office",
-      "rate": 0.01,
-      "schedule": { "start": 0, "end": null }
-    },
-    {
-      "name": "lounge_occupancy",
-      "zone": "study_lounge",
-      "rate": 0.015,
-      "schedule": { "start": 0, "end": null }
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 600,  "rate": 0.002 },
+        { "time": 3600, "rate": 0.001 },
+        { "time": 5400, "rate": 0.002 },
+        { "time": 7200, "rate": 0.001 }
+      ]
     }
   ],
 

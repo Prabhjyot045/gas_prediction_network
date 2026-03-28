@@ -1,3 +1,2 @@
-from .controller import DamperController
-
-__all__ = ["DamperController"]
+# Actuator block merged into blocks/interface/.
+# See blocks/interface/interface.py for EnvironmentInterface.

@@ -301,3 +301,114 @@ class TestWorld:
         world.run(10)
         assert world.step_count == 10
         assert world.time > 0
+
+    def test_zone_distributed_cooling(self):
+        """Cooling should reduce zone mean temperature, not just one cell."""
+        env, world = _make_world()
+        # Disable heat sources so only cooling acts
+        env.heat_sources.clear()
+        room = env.rooms["room_A"]
+        world.T[room.slices] = 30.0  # heat entire zone
+        env.set_damper_opening("vav_A", 1.0)
+        before = world.zone_mean_temperature("room_A")
+        world.step()
+        after = world.zone_mean_temperature("room_A")
+        assert after < before
+
+    def test_cooling_never_below_supply(self):
+        """Zone temperature should never go below supply temperature due to cooling."""
+        env, world = _make_world()
+        room = env.rooms["room_A"]
+        world.T[room.slices] = env.supply_temperature + 0.5
+        env.set_damper_opening("vav_A", 1.0)
+        # Remove heat sources so only cooling acts
+        env.heat_sources.clear()
+        world.step()
+        zone_T = world.T[room.slices][~env.walls[room.slices]]
+        assert np.all(zone_T >= env.supply_temperature - 0.01)
+
+
+# ── Occupancy Profile Tests ──────────────────────────────────────────────
+
+class TestOccupancyProfile:
+    def test_constant_rate_without_profile(self):
+        """HeatSource with no profile returns constant rate."""
+        from blocks.world.environment import HeatSource
+        src = HeatSource(name="test", zone="room_A", rate=0.5)
+        assert src.current_rate(0) == 0.5
+        assert src.current_rate(1000) == 0.5
+
+    def test_profile_overrides_base_rate(self):
+        """Occupancy profile should override the base rate."""
+        from blocks.world.environment import HeatSource
+        src = HeatSource(
+            name="test", zone="room_A", rate=0.01,
+            occupancy_profile=[(0, 0.001), (300, 0.05), (3600, 0.001)],
+        )
+        assert src.current_rate(0) == 0.001
+        assert src.current_rate(500) == 0.05
+        assert src.current_rate(4000) == 0.001
+
+    def test_profile_step_interpolation(self):
+        """Rate holds constant until the next keyframe (step function)."""
+        from blocks.world.environment import HeatSource
+        src = HeatSource(
+            name="test", zone="room_A", rate=0.0,
+            occupancy_profile=[(0, 0.01), (100, 0.05)],
+        )
+        assert src.current_rate(50) == 0.01
+        assert src.current_rate(99) == 0.01
+        assert src.current_rate(100) == 0.05
+        assert src.current_rate(999) == 0.05
+
+    def test_profile_inactive_returns_zero(self):
+        """Profile should respect start/end time."""
+        from blocks.world.environment import HeatSource
+        src = HeatSource(
+            name="test", zone="room_A", rate=0.01, end_time=500.0,
+            occupancy_profile=[(0, 0.05)],
+        )
+        assert src.current_rate(100) == 0.05
+        assert src.current_rate(600) == 0.0
+
+    def test_profile_parsed_from_config(self):
+        """Config with occupancy_profile should parse correctly."""
+        cfg = _make_config()
+        cfg["heat_sources"].append({
+            "name": "occupancy_A",
+            "zone": "room_A",
+            "occupancy_profile": [
+                {"time": 0, "rate": 0.001},
+                {"time": 300, "rate": 0.05},
+                {"time": 3600, "rate": 0.001},
+            ],
+        })
+        env = Environment(_write_config(cfg))
+        occ_src = [s for s in env.heat_sources if s.name == "occupancy_A"][0]
+        assert occ_src.occupancy_profile is not None
+        assert len(occ_src.occupancy_profile) == 3
+        assert occ_src.current_rate(500) == 0.05
+
+    def test_occupancy_changes_heat_over_time(self):
+        """World should inject different heat rates at different times."""
+        cfg = _make_config()
+        cfg["heat_sources"] = [{
+            "name": "occupancy",
+            "zone": "room_A",
+            "occupancy_profile": [
+                {"time": 0, "rate": 0.0},
+                {"time": 10, "rate": 0.5},
+            ],
+        }]
+        env = Environment(_write_config(cfg))
+        world = World(env)
+
+        # Run a few steps with t<10, rate=0 (no heat added)
+        world.run(2)
+        T_no_heat = world.zone_mean_temperature("room_A")
+
+        # Run until t>10, rate=0.5 kicks in
+        while world.time < 30:
+            world.step()
+        T_with_heat = world.zone_mean_temperature("room_A")
+        assert T_with_heat > T_no_heat

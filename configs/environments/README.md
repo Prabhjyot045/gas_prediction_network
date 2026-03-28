@@ -1,6 +1,10 @@
 # Environment Configuration Schema
 
-Environment JSON files define the 3D grid layout for VDPA simulations. Place configs in this directory and reference them with `--config`.
+Environment JSON files define the 3D grid layout for HVAC simulations. Place configs in this directory and reference them with `--config`.
+
+## Primary Config
+
+**`university_floor.json`** — 5-room university building floor with corridors, VAV dampers, occupancy-driven heat sources, and shared cooling plant.
 
 ## Schema
 
@@ -8,102 +12,107 @@ Environment JSON files define the 3D grid layout for VDPA simulations. Place con
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `nx` | int | 20 | Grid cells in X |
-| `ny` | int | 20 | Grid cells in Y |
-| `nz` | int | 5 | Grid cells in Z (height) |
+| `nx` | int | — | Grid cells in X |
+| `ny` | int | — | Grid cells in Y |
+| `nz` | int | — | Grid cells in Z (height) |
 | `dx` | float | 1.0 | Cell spacing in meters |
 
 ### `physics` (required)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `diffusion_coefficient` | float | — | D in m^2/s (typical indoor: 0.01–0.1) |
-| `dt` | float/null | null | Time step in seconds. If null, auto-computed |
+| `thermal_diffusivity` | float | — | alpha in m^2/s (typical indoor air: ~0.02) |
+| `dt` | float/null | null | Time step in seconds. If null, auto-computed from CFL |
 | `safety_factor` | float | 0.4 | Fraction of max stable dt (only used when dt is null) |
+| `ambient_temperature` | float | 20.0 | Initial temperature for all cells |
 
 ### `rooms` (required)
 
-Array of rectangular open regions. **Everything outside rooms is wall.**
+Array of rectangular thermal zones. Each room has a comfort setpoint.
 
 ```json
 {
-  "name": "room_A",
+  "name": "classroom_101",
   "bounds": {
-    "x_min": 1, "x_max": 8,
-    "y_min": 1, "y_max": 8,
-    "z_min": 0, "z_max": 5
-  }
+    "x_min": 1, "x_max": 14,
+    "y_min": 1, "y_max": 12,
+    "z_min": 0, "z_max": 3
+  },
+  "setpoint": 22.0
 }
 ```
 
-Bounds use Python slice convention: `x_max` is exclusive.
+### `hallways` (optional)
 
-### `doors` (optional)
-
-Thin slabs connecting rooms through walls. Can be toggled at runtime.
+Open corridors connecting rooms. No setpoint — just open space.
 
 ```json
 {
-  "name": "door_A_to_hall",
-  "bounds": { "x_min": 8, "x_max": 9, "y_min": 4, "y_max": 6, "z_min": 0, "z_max": 4 },
-  "state": "open"
+  "name": "main_corridor",
+  "bounds": { "x_min": 14, "x_max": 17, "y_min": 1, "y_max": 29, "z_min": 0, "z_max": 3 }
 }
 ```
 
-State is `"open"` or `"closed"`. Open doors carve through walls; closed doors are walls.
+### `vav_dampers` (required for HVAC)
 
-### `sources` (optional)
-
-Gas emission points.
+Variable Air Volume dampers that control cooling airflow per zone.
 
 ```json
 {
-  "name": "gas_leak",
-  "position": { "x": 4, "y": 4, "z": 2 },
-  "rate": 5.0,
-  "start_time": 0,
-  "end_time": null
+  "name": "vav_classroom_101",
+  "zone": "classroom_101",
+  "position": {"x": 7, "y": 6, "z": 2},
+  "max_flow": 1.0,
+  "initial_opening": 0.1
 }
 ```
 
-- `rate`: concentration units per second injected into the cell
-- `end_time`: null means the source never stops
-- Source position must be inside a room (not a wall)
+- `opening` ranges from 0.0 (closed) to 1.0 (fully open)
+- Position must be inside the named zone
+
+### `heat_sources` (optional)
+
+Zone-wide heat injection with optional occupancy profiles.
+
+```json
+{
+  "name": "occupancy_101",
+  "zone": "classroom_101",
+  "rate": 0.02,
+  "schedule": {"start": 0, "end": null},
+  "occupancy_profile": [
+    {"time": 0.0, "rate": 0.0},
+    {"time": 0.5, "rate": 0.02},
+    {"time": 2.0, "rate": 0.0}
+  ]
+}
+```
+
+- `rate`: base heat injection rate (overridden by occupancy_profile if present)
+- `occupancy_profile`: time-varying keyframes with step interpolation
+
+### `cooling_plant` (required for HVAC)
+
+```json
+{
+  "Q_total": 8.0,
+  "supply_temperature": 12.0
+}
+```
+
+- `Q_total`: maximum total cooling capacity (shared across all dampers)
+- `supply_temperature`: chilled air temperature
 
 ### `sensors` (optional)
 
-Configures sensor placement for Block 3 (Network).
+Configures sensor placement for the sensor network.
 
-**Grid placement** (uniform spacing):
 ```json
 {
   "placement": "grid",
-  "spacing": 3,
-  "z_levels": [2],
-  "communication_radius": 5.0
-}
-```
-
-**Random placement**:
-```json
-{
-  "placement": "random",
-  "count": 20,
-  "seed": 42,
-  "z_levels": [2],
-  "communication_radius": 5.0
-}
-```
-
-**Manual placement**:
-```json
-{
-  "placement": "manual",
-  "communication_radius": 5.0,
-  "nodes": [
-    {"name": "s1", "position": {"x": 3, "y": 3, "z": 2}},
-    {"name": "s2", "position": {"x": 7, "y": 7, "z": 2}}
-  ]
+  "spacing": 4,
+  "z_levels": [1],
+  "communication_radius": 6.0
 }
 ```
 
@@ -112,22 +121,30 @@ Configures sensor placement for Block 3 (Network).
 | `placement` | string | "grid" | Strategy: `grid`, `random`, or `manual` |
 | `spacing` | int | 3 | Grid spacing (grid mode only) |
 | `count` | int | 20 | Number of sensors (random mode only) |
-| `seed` | int | 42 | RNG seed for reproducibility (random mode only) |
 | `z_levels` | list[int] | [nz/2] | Z-levels to place sensors on |
-| `communication_radius` | float | 5.0 | Max distance for sensor communication edges |
-| `nodes` | list | [] | Explicit positions (manual mode only) |
+| `communication_radius` | float | 5.0 | Max distance for communication edges |
 
 ### `noise` (optional)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `sensor_sigma` | float | 0.0 | Gaussian noise std dev for sensor readings (used by Block 4) |
-| `source_rate_sigma` | float | 0.0 | Gaussian noise on source emission rate each step |
+| `sensor_sigma` | float | 0.0 | Gaussian noise std dev for sensor readings |
 
-## Example: Creating a New Environment
+### `network` (optional)
 
-1. Copy `default_maze.json` as a starting point
-2. Define rooms as rectangular regions that carve open space
-3. Place doors at the boundaries between rooms (1-cell thick slabs)
-4. Place sources inside rooms
-5. Run the demo to verify: `python -m blocks.world.demo --config configs/environments/your_config.json`
+Centralized controller delay parameters (used by centralized policy baseline).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `polling_interval` | float | 5.0 | How often the central controller polls sensors |
+| `jitter_sigma` | float | 0.5 | Random polling delay std dev |
+| `compute_delay` | float | 1.0 | Central compute time per poll cycle |
+
+## Creating a New Environment
+
+1. Copy `university_floor.json` as a starting point
+2. Define rooms with setpoints and hallways connecting them
+3. Place VAV dampers inside rooms
+4. Add heat sources with occupancy profiles
+5. Configure sensor placement and cooling plant
+6. Verify: `python -m blocks.world.demo --config configs/environments/your_config.json`

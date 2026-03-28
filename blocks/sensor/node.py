@@ -1,12 +1,13 @@
 """
 SensorNode — individual edge inference node with rolling buffer and TTI.
 
-The node architecture separates three layers:
+**Domain-agnostic**: This module knows NOTHING about the physical environment.
+Nodes receive scalar (timestamp, value) pairs from an external interface and
+perform pure inference:
 
-  Layer 1 (Sensing): Domain-agnostic rate-of-change monitoring.
-    - Rolling buffer of readings with least-squares slope estimation (dT/dt).
-    - This layer generalizes to any time-series metric (temperature, CO2,
-      humidity, occupancy, power draw, etc.).
+  Layer 1 (Sensing): Rate-of-change monitoring.
+    - Rolling buffer of readings with least-squares slope estimation (dV/dt).
+    - Works for any time-series metric (temperature, CO2, humidity, power, etc.).
 
   Layer 2 (Prediction): Time-To-Impact estimation.
     - TTI = (threshold - current) / (rate of change)
@@ -14,10 +15,11 @@ The node architecture separates three layers:
 
   Layer 3 (Communication): Gossip-based consensus.
     - Urgency propagates to neighbors via NegotiationMessages.
-    - Bandwidth-efficient: only gossip when |dT/dt| > talk_threshold.
+    - Bandwidth-efficient: only gossip when |dV/dt| > talk_threshold.
 
-Applied here to HVAC temperature monitoring, but the architecture is
-general-purpose for any threshold-breach prediction problem.
+The interface layer (blocks/interface/) is responsible for reading the physical
+environment and feeding values to these nodes, then translating urgency
+decisions back into actuator commands.
 """
 
 from __future__ import annotations
@@ -89,7 +91,6 @@ class SensorNode:
         self,
         name: str,
         position: tuple[int, int, int],
-        dx: float,
         dt: float,
         setpoint: float = 22.0,
         buffer_seconds: float = 30.0,
@@ -98,7 +99,6 @@ class SensorNode:
     ):
         self.name = name
         self.position = position
-        self.dx = dx
         self.dt = dt
         self.setpoint = setpoint
         self.sensor_sigma = sensor_sigma
@@ -109,9 +109,8 @@ class SensorNode:
 
         # ── Local state ──
         self.raw_reading: float = 0.0
-        self.filtered_temperature: float = 0.0
+        self.filtered_value: float = 0.0
         self.dT_dt: float = 0.0
-        self.gradient: np.ndarray = np.zeros(3)
 
         # ── Gossip state ──
         self.inbox: list[NegotiationMessage] = []
@@ -124,24 +123,25 @@ class SensorNode:
 
     # ── Sensing ────────────────────────────────────────────────────────
 
-    def sense(self, T: np.ndarray, timestamp: float) -> float:
-        """Read temperature, add noise, update rolling buffer.
+    def sense(self, value: float, timestamp: float) -> float:
+        """Process a scalar reading, add noise, update rolling buffer.
 
-        Returns the (noisy) temperature reading.
+        The node receives a pre-read value from the interface layer.
+        It knows nothing about where the value came from.
+
+        Returns the (noisy) reading.
         """
-        true_value = float(T[self.position])
-
         if self.sensor_sigma > 0:
             noise = self._rng.normal(0, self.sensor_sigma)
-            self.raw_reading = true_value + noise
+            self.raw_reading = value + noise
         else:
-            self.raw_reading = true_value
+            self.raw_reading = value
 
         self.buffer.append(timestamp, self.raw_reading)
-        self.filtered_temperature = self.raw_reading
+        self.filtered_value = self.raw_reading
         self.dT_dt = self.buffer.slope()
 
-        return self.filtered_temperature
+        return self.filtered_value
 
     # ── TTI (Time-To-Impact) ──────────────────────────────────────────
 
@@ -149,13 +149,13 @@ class SensorNode:
     def tti(self) -> float:
         """Time-To-Impact: seconds until setpoint breach at current rate.
 
-        Returns inf if temperature is falling, stable, or already below setpoint
+        Returns inf if value is falling, stable, or already below setpoint
         with no upward trend.
         """
         if self.dT_dt <= 1e-10:
             return float("inf")
 
-        gap = self.setpoint - self.filtered_temperature
+        gap = self.setpoint - self.filtered_value
         if gap <= 0:
             # Already above setpoint
             return 0.0
@@ -172,47 +172,14 @@ class SensorNode:
             return 0.0
         return 1.0 / t
 
-    # ── Gradient ──────────────────────────────────────────────────────
-
-    def compute_gradient(self, T: np.ndarray, walls: np.ndarray) -> np.ndarray:
-        """Compute spatial gradient nabla(T) using central differences.
-
-        Respects wall boundaries (Neumann: zero gradient at walls).
-        """
-        center_val = T[self.position]
-        grad = np.zeros(3)
-
-        for axis in range(3):
-            pos = self.position[axis]
-            size = T.shape[axis]
-
-            fwd_idx = list(self.position)
-            if pos + 1 < size:
-                fwd_idx[axis] = pos + 1
-                fwd_val = center_val if walls[tuple(fwd_idx)] else T[tuple(fwd_idx)]
-            else:
-                fwd_val = center_val
-
-            bwd_idx = list(self.position)
-            if pos - 1 >= 0:
-                bwd_idx[axis] = pos - 1
-                bwd_val = center_val if walls[tuple(bwd_idx)] else T[tuple(bwd_idx)]
-            else:
-                bwd_val = center_val
-
-            grad[axis] = (fwd_val - bwd_val) / (2.0 * self.dx)
-
-        self.gradient = grad
-        return grad
-
     # ── Gossip ─────────────────────────────────────────────────────────
 
     def create_negotiation_message(
         self, timestamp: float, talk_threshold: float = 0.01
     ) -> NegotiationMessage | None:
-        """Create a negotiation message if temperature is changing significantly.
+        """Create a negotiation message if value is changing significantly.
 
-        Only gossip if |dT/dt| > talk_threshold (saves bandwidth).
+        Only gossip if |dV/dt| > talk_threshold (saves bandwidth).
         """
         if abs(self.dT_dt) < talk_threshold:
             return None
@@ -223,9 +190,8 @@ class SensorNode:
             origin_position=self.position,
             sender_node=self.name,
             timestamp=timestamp,
-            temperature=self.filtered_temperature,
+            value=self.filtered_value,
             dT_dt=self.dT_dt,
-            gradient=self.gradient.copy(),
             urgency=self.urgency,
             hops=0,
         )
@@ -276,11 +242,10 @@ class SensorNode:
             "name": self.name,
             "position": self.position,
             "raw_reading": round(self.raw_reading, 4),
-            "filtered_temperature": round(self.filtered_temperature, 4),
+            "filtered_value": round(self.filtered_value, 4),
             "dT_dt": round(self.dT_dt, 6),
             "tti": self.tti if self.tti != float("inf") else None,
             "urgency": round(self.urgency, 6) if self.urgency != float("inf") else None,
-            "gradient_magnitude": round(float(np.linalg.norm(self.gradient)), 6),
             "messages_sent": self.messages_sent,
             "messages_received": self.messages_received,
             "n_neighbor_urgencies": len(self.neighbor_urgencies),

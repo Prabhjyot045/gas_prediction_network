@@ -1,97 +1,88 @@
-# Block 1: World — 3D FTCS Diffusion Engine
+# Block 1: World — 3D HVAC Thermal Physics Engine
 
 ## Overview
 
-The World block implements a 3D gas diffusion simulation using the Forward-Time Central-Space (FTCS) finite difference method on a NumPy array. The environment layout (rooms, hallways, doors, sources) is loaded from a JSON config file.
+The World block implements a 3D thermal simulation using the Forward-Time Central-Space (FTCS) finite difference method. The environment layout (rooms, hallways, VAV dampers, heat sources with occupancy profiles) is loaded from a JSON config file.
+
+**Physics equation**: `dT/dt = alpha * nabla^2(T) + Q_heat - Q_cool`
 
 ## Modules
 
 | File | Purpose |
 |------|---------|
-| `stability.py` | FTCS stability constraint: `dt <= dx^2 / (6*D)` |
-| `environment.py` | Loads JSON config, builds 3D wall mask, manages doors/sources |
-| `world.py` | Core diffusion engine: `step()`, `close_door()`, `open_door()` |
-| `demo.py` | Standalone animated visualization |
-| `test_world.py` | 22 unit tests covering stability, environment, and diffusion |
+| `stability.py` | CFL stability constraint: `dt <= dx^2 / (6*alpha)` |
+| `environment.py` | Loads JSON config, builds 3D wall mask, manages zones/dampers/heat sources |
+| `world.py` | Core thermal engine: `step()`, `set_damper()`, zone-distributed cooling |
+| `test_world.py` | 45 unit tests covering stability, environment, diffusion, cooling, occupancy |
 
 ## How to Run
 
 ```bash
-# From project root, with conda env activated:
 conda activate ece659
 
 # Run the demo
-python -m blocks.world.demo --config configs/environments/default_maze.json
-
-# With options
-python -m blocks.world.demo \
-    --config configs/environments/default_maze.json \
-    --steps 500 \
-    --z-slice 2 \
-    --close-door door_B_to_hallway \
-    --close-at 200
+python -m blocks.world.demo --config configs/environments/university_floor.json
 
 # Run tests
 python -m pytest blocks/world/test_world.py -v
 ```
 
-### Demo Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--config` | (required) | Path to environment JSON |
-| `--steps` | 300 | Number of animation frames |
-| `--z-slice` | 2 | Z-level to visualize |
-| `--plot-every` | 5 | Simulation steps per animation frame |
-| `--close-door` | None | Door name to close mid-simulation |
-| `--close-at` | 100 | Step at which to close the door |
-| `--vmax` | 5.0 | Colormap ceiling |
-
 ## Physics Details
 
-### Diffusion Equation (FTCS)
+### Heat Diffusion (FTCS)
 
 ```
-phi[i,j,k]_new = phi[i,j,k] + alpha * laplacian[i,j,k]
+T_new = T + alpha * laplacian(T) * dt
 ```
 
-where `alpha = D * dt / dx^2` and the Laplacian is computed via central differences in all 3 axes.
+where `alpha` is the thermal diffusivity (~0.02 m^2/s for air) and the Laplacian is computed via central differences in all 3 axes.
+
+### Cooling Model
+
+VAV dampers inject cooling into their entire zone. Cooling is proportional to damper opening and temperature difference:
+
+```
+Q_cool = opening * max_flow * (T - T_supply)
+```
+
+Total cooling is bounded by the plant budget: `sum(Q_cool_i) <= Q_total`.
+
+### Heat Sources
+
+Zone-wide heat injection with optional occupancy profiles (time-varying rate via keyframe schedule).
 
 ### Boundary Conditions
 
-- **Grid edges**: Zero-flux (Neumann) — the slicing-based Laplacian naturally ignores cells outside the array
-- **Walls**: Dirichlet zero — `phi[walls] = 0` enforced before and after each step
-- **Doors (closed)**: Same as walls. Closing a door also zeros existing concentration in the door cells
+- **Grid edges**: Zero-flux (Neumann)
+- **Walls**: Held at ambient temperature
+- **Hallways**: Open connections between rooms
 
 ### Stability
 
-The FTCS scheme is conditionally stable. The maximum time step is:
-
 ```
-dt_max = dx^2 / (6 * D)
+dt_max = dx^2 / (6 * alpha)
+dt = safety_factor * dt_max  (default safety_factor = 0.4)
 ```
-
-By default, `dt = 0.4 * dt_max` (configurable via `safety_factor` in the JSON). If a user-specified `dt` exceeds `dt_max`, the environment loader raises an error.
 
 ## API
 
 ```python
 from blocks.world import Environment, World
 
-env = Environment("configs/environments/default_maze.json")
+env = Environment("configs/environments/university_floor.json")
 world = World(env)
 
 # Run 100 steps
 world.run(100)
 
-# Access concentration field
-phi = world.get_concentration()  # read-only numpy array
+# Access temperature field
+T = world.T  # 3D numpy array
 
-# Actuate a door
-world.close_door("door_B_to_hallway")
+# Actuate a damper
+world.set_damper("vav_classroom_101", 0.8)
 
 # Metrics
-mass = world.total_mass()
-contaminated = world.contaminated_volume(threshold=0.1)
-integral = world.contamination_integral(threshold=0.1)  # per-step contribution
+print(world.metrics())
+print(f"Max overshoot: {world.max_overshoot():.2f}C")
+print(f"Comfort violation: {world.comfort_violation():.4f}")
 ```

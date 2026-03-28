@@ -31,7 +31,7 @@ High-level manager that orchestrates the per-step cycle:
 
 ## Configuration
 
-Block 4 uses the existing `sensors` and `noise` sections from the environment JSON:
+The `sensors` section of the environment JSON controls placement and communication:
 
 ```json
 "sensors": {
@@ -59,18 +59,17 @@ Additional `SensorField` parameters:
 
 ```python
 from blocks.world import Environment, World
-from blocks.network import SensorNetwork
-from blocks.sensor import SensorField
+from blocks.sensor import SensorNetwork, SensorField
 
+env = Environment("configs/environments/university_floor.json")
 env = Environment("configs/environments/university_floor.json")
 world = World(env)
 network = SensorNetwork(env)
-field = SensorField(env, network, gossip_rounds=1, seed=42)
+field = SensorField(env, network, gossip_rounds=2, seed=42)
 
-# Per-step cycle
-for step in range(200):
-    world.step()
-    field.step(world)
+# Domain-agnostic step: feed scalar readings
+readings = {name: float(world.T[node.position]) for name, node in field.nodes.items()}
+field.step(readings, timestamp=world.time)
 
 # Query predictions
 urgencies = field.get_urgencies()  # {node_name: urgency}

@@ -19,12 +19,19 @@ from .stability import compute_stable_dt, validate_dt
 
 @dataclass
 class HeatSource:
-    """A heat gain in a thermal zone (occupancy, equipment, solar)."""
+    """A heat gain in a thermal zone (occupancy, equipment, solar).
+
+    Supports time-varying heat via an occupancy profile — a list of
+    (time, rate) keyframes representing people entering/leaving a room.
+    Between keyframes the rate is held constant (step interpolation).
+    If no profile is given, ``rate`` is used as a constant.
+    """
     name: str
     zone: str
-    rate: float  # degrees/s added uniformly across the zone
+    rate: float  # base rate (used when no profile, or as default)
     start_time: float = 0.0
     end_time: float | None = None
+    occupancy_profile: list[tuple[float, float]] | None = None
 
     def is_active(self, t: float) -> bool:
         if t < self.start_time:
@@ -32,6 +39,21 @@ class HeatSource:
         if self.end_time is not None and t >= self.end_time:
             return False
         return True
+
+    def current_rate(self, t: float) -> float:
+        """Heat rate at time *t*, accounting for occupancy profile."""
+        if not self.is_active(t):
+            return 0.0
+        if self.occupancy_profile is None:
+            return self.rate
+        # Step interpolation: use most recent keyframe at or before t
+        current = self.rate
+        for kf_time, kf_rate in self.occupancy_profile:
+            if t >= kf_time:
+                current = kf_rate
+            else:
+                break
+        return current
 
 
 @dataclass
@@ -147,12 +169,22 @@ class Environment:
                 raise ValueError(
                     f"Heat source '{src_cfg['name']}' references unknown zone '{zone}'."
                 )
+            # Parse optional occupancy profile
+            profile = None
+            raw_profile = src_cfg.get("occupancy_profile")
+            if raw_profile:
+                profile = sorted(
+                    [(p["time"], p["rate"]) for p in raw_profile],
+                    key=lambda x: x[0],
+                )
+
             self.heat_sources.append(HeatSource(
                 name=src_cfg["name"],
                 zone=zone,
-                rate=src_cfg["rate"],
+                rate=src_cfg.get("rate", 0.0),
                 start_time=src_cfg.get("schedule", {}).get("start", 0.0),
                 end_time=src_cfg.get("schedule", {}).get("end"),
+                occupancy_profile=profile,
             ))
 
     # ── VAV Dampers ───────────────────────────────────────────────────────

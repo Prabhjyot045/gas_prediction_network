@@ -72,14 +72,14 @@ class TestSimulationInit:
         sim = _make_sim()
         assert sim.world is not None
         assert sim.sensor_field is not None
-        assert sim.actuator is not None
+        assert sim.interface is not None
         assert sim.collector is not None
 
     def test_shared_env(self):
         sim = _make_sim()
         assert sim.world.env is sim.env
         assert sim.sensor_field.env is sim.env
-        assert sim.actuator.env is sim.env
+        assert sim.interface.env is sim.env
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -101,7 +101,6 @@ class TestSimulationRun:
     def test_comfort_violation_accumulates(self):
         sim = _make_sim()
         sim.run(50)
-        # With heat source and cooling, should have some comfort metric
         assert sim.cumulative_comfort_violation >= 0
 
     def test_energy_accumulates(self):
