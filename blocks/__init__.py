@@ -1,1 +1,1 @@
-# VDPA - Vanguard Distributed Predictive Actuation
+# Aether-Edge — Decentralized Predictive HVAC Control

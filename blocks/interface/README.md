@@ -35,7 +35,7 @@ python -m pytest blocks/interface/test_interface.py -v
 
 ```python
 from blocks.world import Environment, World
-from blocks.sensor import SensorNetwork, SensorField
+from blocks.sensor_network import SensorNetwork, SensorField
 from blocks.interface.interface import EnvironmentInterface
 
 env = Environment("configs/environments/university_floor.json")

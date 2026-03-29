@@ -17,7 +17,7 @@ The system enforces a clean separation between **what interacts with the environ
 - **Output**: Reads urgency from sensor network → routes fixed airflow budget → actuates vents
 - This is the only code that touches `World.T` or damper controls
 
-**Sensor Network Block** (`blocks/sensor/`) — Pure domain-agnostic inference
+**Sensor Network Block** (`blocks/sensor_network/`) — Pure domain-agnostic inference
 - Receives scalar values — knows nothing about temperature, HVAC, or vents
 - Three inference layers:
   1. **Sensing**: Rolling buffer + least-squares slope estimation (dV/dt)
@@ -33,7 +33,7 @@ The system enforces a clean separation between **what interacts with the environ
 conda activate ece659
 conda install -n ece659 numpy pytest matplotlib networkx jsonschema pyvista -c conda-forge
 
-# Run all tests (190 tests)
+# Run all tests
 python -m pytest blocks/ -v
 
 # Run the benchmark (edge vs centralized on university building)
@@ -51,9 +51,9 @@ This section maps each component of the ECE 659 report to the specific files and
 **The problem**: Centralized Building Management Systems (BMS) suffer from network-induced data staleness. When a central controller polls sensors, computes decisions, and pushes commands, the environment has already changed. In multi-zone buildings with shared cooling capacity, this delay causes comfort violations, wasted energy, and suboptimal resource allocation.
 
 **Where it's demonstrated in code**:
-- The centralized policy in [blocks/actuator/controller.py](blocks/actuator/controller.py) (lines 173-225) explicitly models polling delay, network jitter, and compute delay. Between polls, the controller uses *cached* (stale) data.
-- The `age_of_information` field in each `DamperAction` records exactly how stale the data was for every decision (line 34).
-- The benchmark comparison in [blocks/benchmark/benchmark.py](blocks/benchmark/benchmark.py) (lines 146-153) directly compares AoI between the two approaches.
+- The centralized policy in [blocks/interface/interface.py](blocks/interface/interface.py) explicitly models polling delay, network jitter, and compute delay. Between polls, the controller uses *cached* (stale) data.
+- The `age_of_information` field in each `VentAction` records exactly how stale the data was for every decision.
+- The benchmark comparison in [blocks/benchmark/benchmark.py](blocks/benchmark/benchmark.py) directly compares AoI between the two approaches.
 
 ---
 
@@ -64,9 +64,9 @@ This section maps each component of the ECE 659 report to the specific files and
 **Why this generalizes**: The sensing layer (`RollingBuffer` + slope estimation) is not HVAC-specific. It monitors rate of change of any metric. You could swap temperature for CO2, humidity, occupancy density, or power draw — the prediction and gossip layers work the same way.
 
 **Where it's demonstrated in code**:
-- [blocks/sensor/node.py](blocks/sensor/node.py) — `RollingBuffer` class (least-squares slope estimation), `SensorNode.tti` property (threshold prediction), `SensorNode.urgency` property (actionable signal)
+- [blocks/sensor_network/node.py](blocks/sensor_network/node.py) — `RollingBuffer` class (least-squares slope estimation), `SensorNode.tti` property (threshold prediction), `SensorNode.urgency` property (actionable signal)
 - The `talk_threshold` parameter controls bandwidth: nodes only gossip when they detect a meaningful rate of change (|dT/dt| > threshold)
-- [blocks/sensor/gossip.py](blocks/sensor/gossip.py) — `NegotiationMessage` carries urgency, temperature, and rate of change — not raw sensor dumps
+- [blocks/sensor_network/gossip.py](blocks/sensor_network/gossip.py) — `NegotiationMessage` carries urgency, temperature, and rate of change — not raw sensor dumps
 
 ---
 
@@ -84,10 +84,10 @@ This section maps each component of the ECE 659 report to the specific files and
 
 | Objective | Primary Code | Tests |
 |-----------|-------------|-------|
-| 3D thermal simulation | [blocks/world/world.py](blocks/world/world.py) — FTCS heat diffusion + cooling | [blocks/world/test_world.py](blocks/world/test_world.py) (37 tests) |
-| Rate-of-change monitoring | [blocks/sensor/node.py](blocks/sensor/node.py) — `RollingBuffer`, `slope()`, `dT_dt` | [blocks/sensor/test_sensor.py](blocks/sensor/test_sensor.py) (29 tests) |
-| Prediction (TTI) | [blocks/sensor/node.py](blocks/sensor/node.py) — `tti`, `urgency` properties | Same test file, `TestSensorNodeTTI` class |
-| Gossip consensus | [blocks/sensor/sensor_field.py](blocks/sensor/sensor_field.py) — `_run_gossip()` + [blocks/sensor/gossip.py](blocks/sensor/gossip.py) | Same test file, `TestSensorNodeGossip` class |
+| 3D thermal simulation | [blocks/world/world.py](blocks/world/world.py) — FTCS heat diffusion + cooling | [blocks/world/test_world.py](blocks/world/test_world.py) (45 tests) |
+| Rate-of-change monitoring | [blocks/sensor_network/node.py](blocks/sensor_network/node.py) — `RollingBuffer`, `slope()`, `dT_dt` | [blocks/sensor_network/test_sensor_network.py](blocks/sensor_network/test_sensor_network.py) |
+| Prediction (TTI) | [blocks/sensor_network/node.py](blocks/sensor_network/node.py) — `tti`, `urgency` properties | Same test file, `TestSensorNodeTTI` class |
+| Gossip consensus | [blocks/sensor_network/sensor_field.py](blocks/sensor_network/sensor_field.py) — `_run_gossip()` + [blocks/sensor_network/gossip.py](blocks/sensor_network/gossip.py) | Same test file, `TestSensorNodeGossip` class |
 | Environment I/O (interface) | [blocks/interface/interface.py](blocks/interface/interface.py) — `read_sensors()`, `step()` | [blocks/interface/test_interface.py](blocks/interface/test_interface.py) (14 tests) |
 | Vent routing | [blocks/interface/interface.py](blocks/interface/interface.py) — `_evaluate_edge()`, `_evaluate_centralized()` | Same test file, `TestEdgePolicy` / `TestCentralizedPolicy` classes |
 | Edge vs centralized comparison | [blocks/benchmark/benchmark.py](blocks/benchmark/benchmark.py) — `compare()` | [blocks/benchmark/test_benchmark.py](blocks/benchmark/test_benchmark.py) (7 tests) |
@@ -108,22 +108,23 @@ dT/dt = alpha * nabla^2(T) + Q_heat - Q_cool
 - **Config**: [configs/environments/university_floor.json](configs/environments/university_floor.json) — 5-room university floor (2 classrooms, computer lab, faculty office, study lounge)
 - **Key design**: Environments are JSON-driven. The same code handles any room layout, heat profile, and damper placement.
 
-#### 4b. Sensor Network Topology (merged into Sensor block)
+#### 4b. Sensor Network — Topology + Inference + Gossip
 
-Sensors are placed on a grid and connected by a communication graph (edges within radio range). The topology is domain-agnostic — it defines *who can talk to whom*. Now lives alongside the inference code in the sensor block.
+The sensor network block (`blocks/sensor_network/`) combines mesh topology with the inference engine:
 
-- **Files**: [blocks/sensor/sensor_network.py](blocks/sensor/sensor_network.py), [blocks/sensor/placement.py](blocks/sensor/placement.py)
+- **Topology**: Sensors placed on a grid, connected by a communication graph (edges within radio range)
+- **Files**: [blocks/sensor_network/sensor_network.py](blocks/sensor_network/sensor_network.py), [blocks/sensor_network/placement.py](blocks/sensor_network/placement.py)
 - **Metrics**: Connectivity, coverage, degree distribution, clustering coefficient
 
-#### 4c. Sensing — Rate-of-Change Monitoring (Block 4, Layer 1)
+#### 4c. Sensing — Rate-of-Change Monitoring (Layer 1)
 
 Each sensor node maintains a **rolling buffer** of the last 30 seconds of readings. The least-squares slope of this buffer gives `dT/dt` — the rate of change. This is the foundational signal for everything that follows.
 
-- **File**: [blocks/sensor/node.py](blocks/sensor/node.py) — `RollingBuffer` class, `SensorNode.sense()` method
+- **File**: [blocks/sensor_network/node.py](blocks/sensor_network/node.py) — `RollingBuffer` class, `SensorNode.sense()` method
 - **Key property**: `node.dT_dt` — the estimated rate of change at this sensor position
 - **Key insight**: This layer is domain-agnostic. Replace temperature with CO2 or humidity and the buffer + slope logic is identical.
 
-#### 4d. Prediction — Time-To-Impact (Block 4, Layer 2)
+#### 4d. Prediction — Time-To-Impact (Layer 2)
 
 TTI answers: "At the current rate, when will this zone breach its comfort setpoint?"
 
@@ -134,17 +135,17 @@ TTI = infinity                                when stable or cooling
 
 Urgency is the inverse: `urgency = 1/TTI`. Higher urgency = more imminent breach.
 
-- **File**: [blocks/sensor/node.py](blocks/sensor/node.py) — `SensorNode.tti` property, `SensorNode.urgency` property
-- **Gossip**: Urgency propagates to neighbors via `NegotiationMessage` ([blocks/sensor/gossip.py](blocks/sensor/gossip.py)), so each node knows the urgency landscape of its neighborhood.
+- **File**: [blocks/sensor_network/node.py](blocks/sensor_network/node.py) — `SensorNode.tti` property, `SensorNode.urgency` property
+- **Gossip**: Urgency propagates to neighbors via `NegotiationMessage` ([blocks/sensor_network/gossip.py](blocks/sensor_network/gossip.py)), so each node knows the urgency landscape of its neighborhood.
 
-#### 4e. Gossip Protocol (Block 4, propagation)
+#### 4e. Gossip Protocol (propagation)
 
 Multi-round gossip spreads urgency information through the sensor mesh:
 - Round 0: Nodes with |dT/dt| > talk_threshold generate messages
 - Rounds 1+: Messages are forwarded one hop per round (up to max_hops)
 - Result: Each node knows the urgency of its neighbors, enabling local resource allocation decisions
 
-- **File**: [blocks/sensor/sensor_field.py](blocks/sensor/sensor_field.py) — `_run_gossip()` method
+- **File**: [blocks/sensor_network/sensor_field.py](blocks/sensor_network/sensor_field.py) — `_run_gossip()` method
 - **Bandwidth control**: `talk_threshold` prevents unnecessary chatter when conditions are stable
 
 #### 4f. Environment Interface — I/O Boundary (Block 5)
@@ -165,7 +166,7 @@ This separation means the sensor network is genuinely domain-agnostic — you co
 **Centralized policy** (Baseline):
 - Central controller polls sensors at `polling_interval` (+ random jitter)
 - Same allocation, but with stale data
-- **AoI = polling_interval + jitter + compute_delay** (~7.6 seconds typical)
+- **AoI = polling_interval + jitter + compute_delay** (~20 seconds, measured at 19.4s on university floor)
 
 - **File**: [blocks/interface/interface.py](blocks/interface/interface.py)
 - **Read sensors**: `read_sensors()` — extracts scalar values from World
@@ -191,18 +192,19 @@ The simulation accumulates comfort violation (time-integrated overshoot) and ene
 
 The benchmark environment is a **university building floor** with 5 zones:
 
-| Zone | Setpoint | Heat Source | Scenario |
-|------|----------|-------------|----------|
-| Classroom 101 | 22C | Occupancy (0.02) | Morning lecture |
-| Classroom 102 | 22C | Occupancy (0.025) | Packed lecture |
-| Computer Lab | 20C | Equipment (0.06) | Always-on servers |
-| Faculty Office | 22C | Light occupancy (0.01) | Quiet work |
-| Study Lounge | 22C | Mixed use (0.015) | Variable traffic |
+| Zone | Setpoint | Peak Heat Rate | Scenario |
+|------|----------|----------------|----------|
+| Classroom 101 | 22°C | 0.015 (occupancy profile) | Morning lecture |
+| Classroom 102 | 22°C | 0.014 (occupancy profile) | Afternoon lecture |
+| Computer Lab | 20°C | 0.008 (always-on) + 0.010 (occupancy) | Always-on servers |
+| Conference Room | 22°C | 0.012 (meeting profile) | Scheduled meetings |
+| Faculty Office | 22°C | 0.002 (light occupancy) | Quiet work |
 
 - **Config**: [configs/environments/university_floor.json](configs/environments/university_floor.json)
-- **Grid**: 42x32x3 (3,288 open cells)
-- **Sensors**: 64 nodes, grid spacing=4, comm_radius=6.0
-- **Cooling plant**: Q_total=8.0, T_supply=12C (shared budget across all 5 VAV dampers)
+- **Grid**: 46x30x3 voxels, 1m resolution
+- **Sensors**: grid spacing=4m, communication radius=6.0m
+- **Cooling plant**: Q_total=8.0, T_supply=12°C (shared budget across all 5 VAV dampers)
+- **Centralized network**: polling_interval=15s, jitter_sigma=2s, compute_delay=3s
 
 #### 5b. Benchmark Execution
 
@@ -248,9 +250,7 @@ The `ExperimentRunner` supports sweeping any config parameter (sensor density, c
 |-----------|------|-------|-------------------|
 | World physics | [blocks/world/test_world.py](blocks/world/test_world.py) | 45 | Stability, diffusion, cooling, zones, occupancy |
 | Visualization | [blocks/visualization/test_visualization.py](blocks/visualization/test_visualization.py) | 7 | Mesh construction, volume rendering |
-| Network topology | [blocks/network/test_network.py](blocks/network/test_network.py) | 24 | Placement, graph, connectivity |
-| Sensor + prediction | [blocks/sensor/test_sensor.py](blocks/sensor/test_sensor.py) | 27 | Buffer, TTI, urgency, gossip (domain-agnostic) |
-
+| Sensor network | [blocks/sensor_network/test_sensor_network.py](blocks/sensor_network/test_sensor_network.py) | 51 | Placement, graph, buffer, TTI, urgency, gossip |
 | Interface (I/O) | [blocks/interface/test_interface.py](blocks/interface/test_interface.py) | 14 | Read/actuate, edge/centralized policies, AoI |
 | Simulation | [blocks/simulation/test_simulation.py](blocks/simulation/test_simulation.py) | 12 | Full loop, metrics recording |
 | Benchmark | [blocks/benchmark/test_benchmark.py](blocks/benchmark/test_benchmark.py) | 7 | Comparison, independence |
@@ -276,16 +276,14 @@ gas_prediction_network/
 │   │   └── stability.py                   #   CFL + diffusion stability
 │   ├── visualization/                     # Block 2: 3D PyVista rendering
 │   │   └── renderer.py                    #   Temperature volume + damper markers
-│   ├── sensor/                            # Sensor network: topology + inference + gossip
+│   ├── sensor_network/                    # Sensor network: topology + inference + gossip
 │   │   ├── sensor_network.py              #   NetworkX graph + coverage metrics
 │   │   ├── placement.py                   #   Grid/random/manual sensor placement
 │   │   ├── node.py                        #   RollingBuffer, TTI, urgency (3 layers)
 │   │   ├── gossip.py                      #   NegotiationMessage dataclass
 │   │   └── sensor_field.py                #   Orchestrates sense -> predict -> gossip
-│   ├── network/                           # (redirect → blocks/sensor/)
 │   ├── interface/                         # Environment I/O boundary
 │   │   └── interface.py                   #   Read sensors + route airflow + actuate vents
-│   ├── actuator/                          # (redirect → blocks/interface/)
 │   ├── simulation/                        # Full integration loop
 │   │   └── simulation.py                  #   world -> interface (read→infer→actuate)
 │   ├── benchmark/                         # Edge vs centralized comparison
@@ -301,6 +299,7 @@ gas_prediction_network/
 │   └── experiments/
 │       ├── benchmark_default.json         #   Default benchmark config
 │       └── sweep_sensor_density.json      #   Sensor density parameter sweep
-└── deprecated/
-    └── main.py                            #   Original 2D prototype
+├── results/                               # Generated benchmark outputs
+│   └── benchmark/                         #   JSON, CSV, GIFs, comparison chart
+└── run_benchmark.py                       # Top-level entry point
 ```

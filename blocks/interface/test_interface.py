@@ -16,13 +16,12 @@ from __future__ import annotations
 import json
 import tempfile
 
-import numpy as np
 import pytest
 
 from blocks.world.environment import Environment
 from blocks.world.world import World
-from blocks.sensor.sensor_network import SensorNetwork
-from blocks.sensor.sensor_field import SensorField
+from blocks.sensor_network.sensor_network import SensorNetwork
+from blocks.sensor_network.sensor_field import SensorField
 from blocks.interface.interface import EnvironmentInterface
 
 

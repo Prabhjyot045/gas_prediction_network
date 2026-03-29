@@ -19,6 +19,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -29,8 +30,8 @@ import pytest
 from blocks.world.environment import Environment
 from blocks.world.world import World
 from blocks.visualization.renderer import Renderer
-from blocks.sensor.sensor_network import SensorNetwork
-from blocks.sensor.sensor_field import SensorField
+from blocks.sensor_network.sensor_network import SensorNetwork
+from blocks.sensor_network.sensor_field import SensorField
 from blocks.interface.interface import EnvironmentInterface
 from blocks.simulation.simulation import Simulation
 from blocks.benchmark.benchmark import Benchmark
@@ -43,10 +44,22 @@ pv.OFF_SCREEN = True
 
 
 def _write_config(config: dict) -> Path:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    json.dump(config, f)
-    f.close()
-    return Path(f.name)
+    fd, name = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f)
+    except Exception:
+        os.unlink(name)
+        raise
+    return Path(name)
+
+
+@pytest.fixture
+def config_path():
+    """Yield a temp config path and delete it after the test."""
+    path = _write_config(_two_room_config())
+    yield path
+    path.unlink(missing_ok=True)
 
 
 def _two_room_config() -> dict:
@@ -88,10 +101,9 @@ def _two_room_config() -> dict:
 
 
 @pytest.fixture
-def setup():
+def setup(config_path):
     """Create linked Environment, World, and Renderer sharing the same env."""
-    cfg = _write_config(_two_room_config())
-    env = Environment(cfg)
+    env = Environment(config_path)
     world = World(env)
     renderer = Renderer(env)
     return env, world, renderer
@@ -460,27 +472,24 @@ class TestInterfaceIntegration:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestSimulationIntegration:
-    def test_simulation_all_blocks_share_env(self):
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+    def test_simulation_all_blocks_share_env(self, config_path):
+        sim = Simulation(config_path, seed=42)
         env = sim.env
         assert sim.world.env is env
         assert sim.network.env is env
         assert sim.sensor_field.env is env
         assert sim.interface.env is env
 
-    def test_simulation_step_order(self):
+    def test_simulation_step_order(self, config_path):
         """Each step: world -> interface (read → infer → actuate)."""
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+        sim = Simulation(config_path, seed=42)
 
         sim.step()
         assert sim.world.step_count == 1
         assert sim.sensor_field._step_count == 1
 
-    def test_simulation_metrics_collection(self):
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+    def test_simulation_metrics_collection(self, config_path):
+        sim = Simulation(config_path, seed=42)
         sim.run(20, record_every=10)
         assert len(sim.collector.records) == 2
         rec = sim.collector.records[-1]
@@ -489,21 +498,18 @@ class TestSimulationIntegration:
         assert "cumulative_energy" in rec
         assert "mean_age_of_information" in rec
 
-    def test_simulation_cumulative_comfort_violation(self):
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+    def test_simulation_cumulative_comfort_violation(self, config_path):
+        sim = Simulation(config_path, seed=42)
         sim.run(50)
         assert sim.cumulative_comfort_violation >= 0
 
-    def test_simulation_cumulative_energy(self):
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+    def test_simulation_cumulative_energy(self, config_path):
+        sim = Simulation(config_path, seed=42)
         sim.run(50)
         assert sim.cumulative_energy > 0
 
-    def test_simulation_summary(self):
-        cfg = _write_config(_two_room_config())
-        sim = Simulation(cfg, seed=42)
+    def test_simulation_summary(self, config_path):
+        sim = Simulation(config_path, seed=42)
         sim.run(10)
         s = sim.summary()
         assert "Policy" in s
@@ -515,9 +521,8 @@ class TestSimulationIntegration:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBenchmarkIntegration:
-    def test_benchmark_runs_both_policies(self):
-        cfg = _write_config(_two_room_config())
-        bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
+    def test_benchmark_runs_both_policies(self, config_path):
+        bm = Benchmark(config_path, n_steps=50, record_every=10, seed=42)
         comparison = bm.run()
         assert "edge" in comparison
         assert "centralized" in comparison
@@ -525,18 +530,16 @@ class TestBenchmarkIntegration:
         assert comparison["centralized"]["cumulative_energy"] >= 0
         assert "comparison" in comparison
 
-    def test_benchmark_results_independent(self):
+    def test_benchmark_results_independent(self, config_path):
         """Each policy run should be independent (separate World instances)."""
-        cfg = _write_config(_two_room_config())
-        bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
+        bm = Benchmark(config_path, n_steps=50, record_every=10, seed=42)
         edge_sim = bm.run_edge()
         cent_sim = bm.run_centralized()
         assert edge_sim.world is not cent_sim.world
         assert edge_sim.env is not cent_sim.env
 
-    def test_benchmark_comparison_metrics(self):
-        cfg = _write_config(_two_room_config())
-        bm = Benchmark(cfg, n_steps=50, record_every=10, seed=42)
+    def test_benchmark_comparison_metrics(self, config_path):
+        bm = Benchmark(config_path, n_steps=50, record_every=10, seed=42)
         result = bm.run()
         comp = result["comparison"]
         assert "comfort_improvement_pct" in comp
@@ -559,9 +562,9 @@ class TestDecoupling:
         assert world.step_count == 0
         pl.close()
 
-    def test_blocks_work_independently(self):
+    def test_blocks_work_independently(self, config_path):
         """Each block works with only Environment as the shared interface."""
-        cfg = _write_config(_two_room_config())
+        cfg = config_path
 
         # Block 1 only
         env1 = Environment(cfg)
@@ -580,10 +583,9 @@ class TestDecoupling:
         assert isinstance(pl, pv.Plotter)
         pl.close()
 
-    def test_sensor_field_decoupled_from_world(self):
+    def test_sensor_field_decoupled_from_world(self, config_path):
         """SensorField.step() takes readings dict, NOT a World object."""
-        cfg = _write_config(_two_room_config())
-        env = Environment(cfg)
+        env = Environment(config_path)
         net = SensorNetwork(env)
         field = SensorField(env, net, seed=42)
 
@@ -600,10 +602,9 @@ class TestDecoupling:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestFullIntegration:
-    def test_all_blocks_together(self):
+    def test_all_blocks_together(self, config_path):
         """Full integration: World + Renderer + Network + SensorField + Interface."""
-        cfg = _write_config(_two_room_config())
-        env = Environment(cfg)
+        env = Environment(config_path)
         world = World(env)
         renderer = Renderer(env)
         net = SensorNetwork(env)

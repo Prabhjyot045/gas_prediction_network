@@ -1,0 +1,505 @@
+\documentclass[conference]{IEEEtran}
+
+% ── Packages ────────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+% hyperref must be last
+\usepackage{hyperref}
+
+% ── TODO helper (remove before submission) ──────────────────────────────────
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title block ─────────────────────────────────────────────────────────────
+\title{Aether-Edge: Decentralized Predictive Control for Building HVAC
+       Systems via Age-of-Information-Aware Gossip Networks}
+
+\author{%
+  \IEEEauthorblockN{Prabjot Singh}
+  \IEEEauthorblockA{%
+    Department of Electrical and Computer Engineering\\
+    ECE 659 --- Spring 2026
+  }
+}
+
+\maketitle
+
+% ── Abstract ────────────────────────────────────────────────────────────────
+\begin{abstract}
+\todo{Write 150--200 word abstract: state the problem (centralized BAS
+polling introduces AoI-induced comfort violations), describe the approach
+(per-zone rolling-buffer TTI inference + urgency gossip + proportional
+damper allocation), and summarize the key result (87.7\% comfort
+improvement, 71\% fewer messages, AoI = 0 vs 19.4\,s centralized baseline
+on the university floor environment).}
+\end{abstract}
+
+% ============================================================================
+\section{Introduction}
+% ============================================================================
+
+\subsection{Problem Statement}
+% OUTLINE: Frame the core problem — buildings waste energy and deliver poor
+% thermal comfort when using centralized reactive HVAC control.
+%
+% Key points to develop:
+% - Buildings account for ~40% of global energy consumption; HVAC alone is
+%   ~50% of building energy (cite ASHRAE, IEA reports)
+% - Conventional Building Automation Systems (BAS) rely on centralized polling:
+%   sensors report to a central controller, controller issues commands, dampers
+%   react — all with inherent delays
+% - Thermal comfort violations are costly: discomfort affects occupant
+%   productivity; over-cooling wastes energy; under-cooling triggers complaints
+% - Real buildings have spatially heterogeneous heat loads (occupancy, solar
+%   gain, equipment) that evolve faster than centralized polling loops can track
+
+\todo{Expand with statistics on HVAC energy waste and comfort incidents in
+commercial buildings (target 2--3 sentences per bullet above).}
+
+\subsection{Motivation}
+% OUTLINE: Explain why decentralized edge inference is the right solution
+% direction, and what gap it fills versus existing work.
+%
+% Key points to develop:
+% - Centralized BAS polling intervals are typically 5--30 seconds; a lecture
+%   hall full of students can raise temperature 1--2\,\textdegree C in that window
+% - Age of Information (AoI) is the right metric: it measures staleness of
+%   the control decision, not just communication latency
+% - Edge computing (sensors that infer locally) eliminates the poll-respond
+%   delay: AoI collapses to near-zero because each zone acts on its own
+%   real-time estimate
+% - Gossip protocols allow zones to share urgency estimates with neighbors
+%   without a central coordinator, enabling resource negotiation across zones
+
+\todo{Motivate with a concrete scenario --- a university classroom building
+with heterogeneous occupancy patterns that challenge fixed-schedule BAS.}
+
+\subsection{Goal and Objectives}
+% OUTLINE: State the thesis and enumerate measurable objectives.
+%
+% Thesis: A decentralized edge network --- where each zone maintains a rolling
+% temperature estimate, computes its time-to-impact (TTI), and gossips urgency
+% to neighbors --- outperforms a centralized reactive controller on thermal
+% comfort, energy efficiency, and network overhead.
+%
+% Objectives:
+% (O1) Design and implement a 3D thermal diffusion physics engine that
+%      accurately models heat flow, advection, and VAV damper cooling.
+% (O2) Design a per-zone inference engine using a rolling buffer + OLS slope
+%      estimator to compute dT/dt and TTI without a Kalman filter.
+% (O3) Implement an urgency-weighted gossip protocol for decentralized resource
+%      negotiation among zones (proportional allocation of cooling capacity).
+% (O4) Implement a centralized baseline with configurable polling interval,
+%      network jitter, and compute delay to simulate real BAS behaviour.
+% (O5) Benchmark edge vs centralized on: cumulative comfort violation,
+%      cumulative energy, max overshoot, AoI, and message count.
+
+\todo{Write objectives as a numbered list. One sentence each, measurable.}
+
+
+% ============================================================================
+\section{Related Work}
+% ============================================================================
+
+\subsection{Building Automation and Centralized HVAC Control}
+% OUTLINE: Survey of classical BAS approaches.
+%
+% Key references to find:
+% - ASHRAE Standard 135 (BACnet): dominant polling protocol for BAS;
+%   defines polling intervals, message formats, centralized controller role
+% - PID-based thermostatic control: pros (simplicity), cons (no prediction,
+%   oscillation around setpoint, integral windup in multi-zone systems)
+% - Model Predictive Control (MPC) for HVAC (Oldewurtel et al. 2012;
+%   Ma et al. 2012): centralized optimization over a prediction horizon;
+%   powerful but requires a global model and high communication bandwidth
+% - Limitation of MPC: requires accurate system model; computationally heavy
+%   at scale; still uses centralized polling
+
+\todo{Summarize 4--5 key papers. 1--2 sentences each. Note limitations.}
+
+\subsection{Decentralized and Multi-Agent Control}
+% OUTLINE: Survey of distributed/multi-agent control for buildings.
+%
+% Key references to find:
+% - Multi-agent HVAC control (Bendapudi \& Bhattacharya, Hao et al.):
+%   agents negotiate resource allocation without central coordinator
+% - Consensus algorithms in multi-agent systems (Olfati-Saber 2007):
+%   gossip-based averaging converges to global consensus in finite rounds
+% - Demand response and zone-level autonomy: each zone independently
+%   decides when to request cooling vs defer (price-responsive agents)
+% - Limitation: most multi-agent HVAC work still uses periodic synchronous
+%   communication; does not explicitly model or minimize AoI
+
+\todo{Highlight what our gossip-based negotiation adds over existing
+distributed approaches (explicit AoI minimization via urgency threshold).}
+
+\subsection{Age of Information in Networked Control}
+% OUTLINE: Survey AoI as a metric for freshness-aware control.
+%
+% Key references to find:
+% - Kaul, Yates, Gruteser (2012): introduced AoI as peak freshness metric
+%   for status update systems
+% - Kaul, Yates (2020): AoI-optimal update policies for energy-constrained
+%   sensor networks
+% - Sun et al. (2017): AoI-optimal scheduling in multi-source settings
+% - Application to cyber-physical systems: stale control actions from high
+%   AoI lead to oscillation and setpoint overshoot (Costa, Ephremides 2016)
+% - Gap: AoI has not been explicitly used as a design criterion for HVAC
+%   zone-level actuation
+
+\todo{Connect AoI theory back to our design: TTI threshold for gossip
+triggers = AoI-aware communication strategy.}
+
+\subsection{Gossip Protocols and Sensor Networks}
+% OUTLINE: Survey gossip as the communication primitive.
+%
+% Key references to find:
+% - Kempe, Dobra, Gehrke (2003): gossip for distributed aggregate computation
+%   (mean, sum) --- foundational reference for gossip in sensor networks
+% - Boyd et al. (2006): randomized gossip algorithms --- convergence rates,
+%   mixing time, connectivity requirements
+% - Push-sum protocol for weighted aggregation: relevant because our urgency
+%   gossip propagates a weighted sum (urgency / total urgency)
+% - Energy-efficient gossip with thresholds: only transmit if change exceeds
+%   threshold --- matches our \texttt{talk\_threshold} parameter
+
+\todo{Note convergence guarantees of gossip in connected graphs.
+Our 2-round gossip is a deliberate approximation for low-latency actuation.}
+
+
+% ============================================================================
+\section{Methodology}
+% ============================================================================
+
+\subsection{System Architecture}
+% OUTLINE: Describe the 7-block architecture and information flow.
+%
+% Information flow:
+%   World \to Interface \to SensorField \to [gossip] \to Interface \to World
+%
+% Block summary (one paragraph):
+%   Block 1: World --- 3D thermal physics engine
+%   Block 2: Visualization --- heatmap animation renderer
+%   Block 3: Interface --- environment I/O boundary (only block touching World)
+%   Block 4: SensorNetwork --- mesh topology and gossip graph
+%   Block 5: SensorField --- per-node rolling buffer + TTI inference
+%   Block 6: Simulation --- edge vs centralized orchestration
+%   Block 7: Benchmark --- metrics collection and comparison
+%
+% Key design principle: SensorField never touches World directly.
+% Interface is the sole I/O boundary, enforcing decoupling between
+% the physics engine and the inference network.
+
+% \begin{figure}[t]
+%   \centering
+%   \includegraphics[width=\columnwidth]{figs/architecture.pdf}
+%   \caption{Aether-Edge system architecture. Arrows show information flow.
+%            The Interface block is the only component that reads from or
+%            writes to the World.}
+%   \label{fig:arch}
+% \end{figure}
+
+\todo{Draw block diagram as a figure. Use \textbackslash columnwidth for
+IEEE two-column layout.}
+
+\subsection{Thermal Physics Engine}
+% OUTLINE: Governing equation and numerical scheme.
+%
+% Governing equation:
+%   \frac{\partial T}{\partial t} =
+%       \alpha \nabla^2 T - \mathbf{v} \cdot \nabla T + Q_\text{heat} - Q_\text{cool}
+%
+% - \alpha = 0.02 m^2/s (thermal diffusivity of air)
+% - Diffusion: central-difference Laplacian on 3D grid (dx = 1 m)
+% - Advection: upwind differencing for stability (avoids artificial diffusion)
+% - Q_heat: per-zone occupancy/equipment/solar loads with configurable schedules
+% - Q_cool: proportional to damper opening A_i \in [0,1]; shared plant capacity
+%   Q_total; sum(A_i * Q_total) \leq Q_total enforced at each step
+% - Adaptive dt: satisfies both diffusion CFL and advection CFL conditions
+% - Grid: nx \times ny \times nz voxels; walls carved from room bounds;
+%   zero-flux (Neumann) boundary conditions at domain walls
+
+\todo{Add the governing PDE and the adaptive dt formula as display equations.
+Reference \texttt{blocks/world/world.py} for the exact stencil.}
+
+\subsection{Per-Zone Inference: Rolling Buffer and TTI}
+% OUTLINE: The core "prediction" mechanism.
+%
+% Rolling Buffer:
+% - Circular buffer of last N = buffer_seconds / dt samples per sensor node
+% - Discards readings older than buffer_seconds
+%
+% Rate Estimator:
+% - dT/dt estimated via ordinary least-squares fit on buffer contents
+% - More robust than finite difference over noisy readings
+%
+% Time-to-Impact (TTI):
+%   TTI = (T_sp - T) / (dT/dt)   if dT/dt > 0
+%   TTI = \infty                  otherwise
+%
+% Urgency:
+%   u = 1 / TTI   (higher u => zone is approaching setpoint faster)
+%
+% This is the AoI-aware signal: each zone computes its own urgency from
+% current data (AoI = 0), with no dependence on a central poll.
+
+\todo{Show TTI and urgency as display equations. One sentence each on
+why OLS over the buffer is preferred to finite difference.}
+
+\subsection{Urgency Gossip and Resource Negotiation}
+% OUTLINE: Describe the gossip protocol and proportional allocation.
+%
+% Gossip Protocol:
+% - Threshold-triggered: node broadcasts urgency only if |dT/dt| > talk_threshold
+%   (avoids unnecessary communication when temperature is stable)
+% - After gossip_rounds rounds, each zone aggregates neighborhood urgencies
+%
+% Proportional Damper Allocation (edge policy):
+%   A_i = u_i / \sum_j u_j
+%   Q_cool,i = A_i \times Q_total
+%
+% Centralized Baseline:
+% - Central controller polls all sensors every polling_interval seconds
+%   (+ Gaussian jitter \sigma, + compute delay)
+% - Issues damper commands using stale urgency data
+% - AoI = polling_interval + jitter + compute_delay (configurable)
+%
+% Both policies use the same proportional formula; only the data freshness
+% differs. This isolates the effect of AoI on control performance.
+
+\todo{Add the proportional allocation equation as a display equation.
+Cite the connection to push-sum gossip for weighted aggregation.}
+
+\subsection{Simulation Modes}
+% OUTLINE: One-step execution order for edge vs centralized.
+%
+% Edge mode (per step):
+%   (1) world.step()         advance physics
+%   (2) interface.read()     sense zone temperatures
+%   (3) sensor_field.step()  update buffers, compute TTI, run gossip
+%   (4) interface.actuate()  apply urgency-weighted damper openings
+%   AoI = 0: actuation uses current-step urgency
+%
+% Centralized mode (per step):
+%   (1) world.step()
+%   (2) interface.read()
+%   (3) poll_timer check: if fired, collect urgencies, compute, queue commands
+%       (poll fires every polling_interval + jitter seconds)
+%   (4) interface.actuate() using queued (stale) commands
+%   AoI = time elapsed since last poll cycle
+
+\subsection{Metrics and Benchmark Framework}
+% OUTLINE: Define the five evaluation metrics.
+%
+% Metrics (collected every record_every steps):
+% - Cumulative Comfort Violation: \int \max(T - T_sp, 0) dt over all zones
+%   [unit: degree-seconds; lower is better]
+% - Cumulative Energy: \int Q_cool \, dt over all steps [lower is better]
+% - Max Overshoot: \max_t \max_z (T_z(t) - T_{sp,z}) [\textdegree C]
+% - Mean AoI: average age of sensor data at actuation time [seconds]
+% - Total Messages: cumulative gossip transmissions [lower is better]
+
+\todo{Present metrics as a small table with definition and unit columns.}
+
+
+% ============================================================================
+\section{Experimental Results}
+% ============================================================================
+
+\subsection{Experimental Setup}
+% OUTLINE: Describe the benchmark environment and parameters.
+%
+% Environment: university\_floor.json
+%   5 zones: classroom\_101, classroom\_102, computer\_lab,
+%            conference\_room, faculty\_office
+%   Grid: 46 x 30 x 3 voxels (1 m resolution)
+%   Thermal diffusivity: \alpha = 0.02 m^2/s
+%   Ambient: 20\,\textdegree C; zone setpoints: 20--22\,\textdegree C
+%   Heat sources: occupancy + equipment loads with scheduled profiles per zone
+%   1 VAV damper per zone; Q_total = 8.0 (shared); T_supply = 12\,\textdegree C
+%   Sensors: grid spacing 4 m, communication radius 6.0 m
+%
+% Simulation parameters:
+%   400 steps; adaptive dt varies per step
+%   Gossip rounds: 2; talk\_threshold: 0.01
+%   Centralized: polling\_interval = 15 s, jitter \sigma = 2.0 s,
+%   compute\_delay = 3 s (measured mean AoI = 19.4 s); random seed = 42
+
+\subsection{Main Results}
+
+% Results already populated from comparison.json (seed=42, 400 steps):
+\begin{table}[t]
+\centering
+\caption{Aether-Edge vs.\ Centralized Baseline
+         (university\_floor, 400 steps, seed\,=\,42)}
+\label{tab:results}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Metric} & \textbf{Edge} & \textbf{Cent.} & \textbf{Gain} \\
+\midrule
+Comfort Violation  & 4.65   & 37.92  & \textbf{87.7\%} \\
+Energy             & 2271.1 & 2312.5 & \textbf{1.8\%}  \\
+Max Overshoot (\textdegree C) & 0.00 & 0.00 & ---   \\
+Mean AoI (s)       & 0.00   & 19.38  & \textbf{100\%}  \\
+Total Messages     & 1{,}037 & 3{,}590 & \textbf{71.1\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% OUTLINE: Narrative interpretation of Table~\ref{tab:results}:
+% - 87.7% comfort improvement: TTI prediction catches rising temperatures
+%   before the poll cycle would fire; centralized reacts only after lag
+% - AoI = 0 for edge: actuation always uses current-step sensor data;
+%   centralized carries ~19.4 s of stale data on average
+% - 71% fewer messages: talk_threshold suppresses gossip during stable
+%   periods; centralized polls all zones unconditionally every cycle
+% - Energy nearly equal (1.8% savings): proportional allocation is the same
+%   formula in both policies; edge advantage comes from more accurate TTI
+% - Max overshoot = 0 for both: university_floor heat load is moderate;
+%   future work should increase Q_heat to stress-test overshoot behaviour
+
+\todo{Add \textbackslash includegraphics references to comparison\_chart.png
+and representative frames from the heatmap GIFs.}
+
+\subsection{Time-Series Analysis}
+% OUTLINE: Discuss comfort violation and energy curves over 400 steps.
+%
+% Comfort violation curve:
+% - Edge: accumulates slowly; plateaus early as TTI drives preemptive cooling
+% - Centralized: grows steadily; each poll-cycle lag allows unchecked warming
+% - Divergence point: ~step 50 (first poll cycle fires; centralized falls behind)
+%
+% Energy curve:
+% - Both grow roughly linearly; edge stays slightly below centralized
+% - Edge applies cooling more precisely (targets zones with low TTI);
+%   centralized applies it more uniformly due to stale data
+%
+% Max overshoot curve:
+% - Near zero for both; moderate heat load in university_floor
+% - Recommend hvac_office.json or increased Q_heat for harder stress test
+
+\todo{Reference subplots in comparison\_chart.png by panel label (a)--(f).}
+
+\subsection{Sensitivity to Communication Parameters}
+% OUTLINE: Planned parameter sweep --- not yet run.
+%
+% Variables:
+% - centralized polling\_interval: [2, 5, 10, 20] s
+%   Expect comfort violation to scale with polling interval
+% - gossip\_rounds: [1, 2, 3, 5]
+%   More rounds => better consensus, higher message count
+% - sensor spacing: [2, 3, 5, 8] m
+%   Sparser sensors => noisier TTI => degraded edge performance
+%
+% Hypothesis: edge remains superior at all polling intervals tested,
+% because AoI = 0 is fundamentally better than any finite polling rate.
+
+\todo{Run sweep using \texttt{configs/experiments/sweep\_sensor\_density.json}
+and replace this outline with a results table.}
+
+\subsection{Qualitative Heatmap Analysis}
+% OUTLINE: Observations from edge\_heatmap.gif and centralized\_heatmap.gif.
+%
+% Edge:
+% - Damper openings respond within 1--2 frames of zone warming onset
+% - Temperature field remains spatially uniform near 20--22\,\textdegree C
+% - Smooth, continuous damper adjustment visible throughout the animation
+%
+% Centralized:
+% - Visible lag between warming onset and damper response (full poll cycle)
+% - Warm spots persist for ~5--6 frames before correction
+% - Damper openings update in discrete jumps at each poll event
+
+\todo{Extract specific GIF frame numbers and include as static subfigures
+using \textbackslash begin\{subfigure\}.}
+
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+\subsection{Summary}
+% OUTLINE: What was built and what was demonstrated.
+%
+% Built:
+% - 7-block simulation framework: thermal physics, per-zone TTI inference,
+%   urgency gossip, decentralized resource negotiation, centralized baseline,
+%   benchmark infrastructure
+% - 190 unit and integration tests with full block coverage
+% - run\_benchmark.py generating JSON/CSV metrics and GIF animations
+%
+% Demonstrated:
+% - Edge: 87.7% lower comfort violation, 1.8% less energy, 71% fewer messages
+% - Root cause: AoI = 0 (edge) vs 19.4 s (centralized); preemptive TTI
+%   actuation consistently beats reactive polling
+% - Urgency gossip converges in 2 rounds for the university floor topology
+%   and correctly negotiates proportional cooling allocation
+
+\subsection{Limitations}
+% OUTLINE: Honest scope boundaries.
+%
+% - Linear diffusion + advection only; no radiation, humidity, or thermal mass
+% - Simulation only; no BACnet/Modbus integration or real sensor hardware
+% - 2-round gossip does not guarantee optimal global consensus in sparse graphs
+% - Fixed heat source schedules; no real-time occupancy feedback
+% - Single shared cooling plant; real buildings have per-zone AHU constraints
+
+\subsection{Future Work}
+% OUTLINE: Six concrete extensions, in priority order.
+%
+% (F1) Hardware deployment on Raspberry Pi Zero W nodes with DS18B20 sensors
+% (F2) EnergyPlus/TRNSYS co-simulation via FMI for higher-fidelity physics
+% (F3) CO2/PIR-driven dynamic Q_heat update for occupancy-aware scheduling
+% (F4) AoI-optimal talk\_threshold scheduling per Kaul \& Yates (2020)
+% (F5) Hierarchical two-tier gossip for multi-plant resource negotiation
+% (F6) SAC reinforcement learning baseline comparison
+
+% ============================================================================
+% References
+% ============================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+% ── Stub references (replace with references.bib) ────────────────────────────
+% \begin{thebibliography}{99}
+%
+% \bibitem{kaul2012}
+%   S.~Kaul, R.~Yates, and M.~Gruteser, ``Status updates through queues,''
+%   in \textit{Proc. CISS}, Princeton, NJ, 2012.
+%
+% \bibitem{oldewurtel2012}
+%   F.~Oldewurtel et al., ``Use of model predictive control and weather
+%   forecasts for energy efficient building climate control,''
+%   \textit{Energy and Buildings}, vol.~45, pp.~15--27, 2012.
+%
+% \bibitem{olfatisaber2007}
+%   R.~Olfati-Saber, J.~A.~Fax, and R.~M.~Murray, ``Consensus and cooperation
+%   in networked multi-agent systems,'' \textit{Proc. IEEE}, vol.~95, no.~1,
+%   pp.~215--233, Jan. 2007.
+%
+% \bibitem{kempe2003}
+%   D.~Kempe, A.~Dobra, and J.~Gehrke, ``Gossip-based computation of aggregate
+%   information,'' in \textit{Proc. FOCS}, 2003, pp.~482--491.
+%
+% \bibitem{boyd2006}
+%   S.~Boyd, A.~Ghosh, B.~Prabhakar, and D.~Shah, ``Randomized gossip
+%   algorithms,'' \textit{IEEE Trans. Inf. Theory}, vol.~52, no.~6,
+%   pp.~2508--2530, Jun. 2006.
+%
+% \bibitem{ashrae2017}
+%   ASHRAE, ``Standard 55-2017: Thermal Environmental Conditions for
+%   Human Occupancy,'' 2017.
+%
+% \bibitem{sun2017}
+%   Y.~Sun et al., ``Update or wait: How to keep your information fresh,''
+%   in \textit{Proc. IEEE INFOCOM}, 2017.
+%
+% \end{thebibliography}
+
+\end{document}

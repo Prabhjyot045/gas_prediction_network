@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from blocks.world.environment import Environment
 from blocks.world.world import World

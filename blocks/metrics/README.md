@@ -42,7 +42,7 @@ Drives parameter sweeps from a JSON config file.
 from blocks.metrics import ExperimentRunner
 from blocks.world.environment import Environment
 from blocks.world.world import World
-from blocks.sensor import SensorNetwork
+from blocks.sensor_network import SensorNetwork
 
 def run(env_config, sim_config, collector):
     import tempfile, json

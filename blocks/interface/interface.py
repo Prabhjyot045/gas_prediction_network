@@ -29,8 +29,8 @@ import numpy as np
 if TYPE_CHECKING:
     from blocks.world.environment import Environment
     from blocks.world.world import World
-    from blocks.sensor.sensor_field import SensorField
-    from blocks.sensor.sensor_network import SensorNetwork
+    from blocks.sensor_network.sensor_field import SensorField
+    from blocks.sensor_network.sensor_network import SensorNetwork
 
 
 @dataclass

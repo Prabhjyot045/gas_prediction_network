@@ -9,12 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 import pyvista as pv
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from blocks.visualization.renderer import Renderer
 from blocks.simulation.simulation import Simulation

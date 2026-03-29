@@ -16,68 +16,70 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import sys
+import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.animation as animation
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
 from blocks.simulation.simulation import Simulation
 
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Aether-Edge — 2D Heatmap Animation")
-    p.add_argument("--config", type=str, required=True)
-    p.add_argument("--frames", type=int, default=200, help="Number of simulation frames")
-    p.add_argument("--steps-per-frame", type=int, default=3, help="Sim steps per animation frame")
-    p.add_argument("--pre-steps", type=int, default=0, help="Warm-up steps before recording")
-    p.add_argument("--z-slice", type=int, default=1, help="Which z-layer to visualize")
-    p.add_argument("--gif", type=str, default=None, help="Save to GIF file")
-    p.add_argument("--fps", type=int, default=15, help="Frames per second for GIF")
-    return p.parse_args()
+if TYPE_CHECKING:
+    pass
 
 
-def main() -> None:
-    args = parse_args()
+def render_heatmap_gif(
+    sim: Simulation,
+    output_path: Path | str | None,
+    *,
+    n_frames: int = 200,
+    steps_per_frame: int = 3,
+    z_slice: int = 1,
+    fps: int = 15,
+    policy_label: str = "",
+) -> None:
+    """Render an animated heatmap of a running Simulation.
 
-    # Boot the full Aether-Edge simulation
-    sim = Simulation(args.config, actuator_policy="edge", seed=42)
+    Advances the simulation by (n_frames * steps_per_frame) total steps.
+    If output_path is None, displays the animation interactively.
+    If output_path is provided, saves a GIF and closes the figure.
+
+    Args:
+        sim: A fully constructed Simulation (not yet stepped, or pre-warmed).
+        output_path: Path to save the GIF, or None to display interactively.
+        n_frames: Number of animation frames.
+        steps_per_frame: Simulation steps advanced per visual frame.
+        z_slice: Z-layer index to visualize.
+        fps: Frames per second for the saved GIF.
+        policy_label: Display label shown in the title (e.g. "Edge" or "Centralized").
+    """
     env = sim.env
     world = sim.world
-    z = args.z_slice
+    z = z_slice
 
-    print(env.summary())
-
-    # Warm up
-    if args.pre_steps > 0:
-        print(f"Warming up: {args.pre_steps} steps...")
-        for _ in range(args.pre_steps):
-            sim.step()
+    label = policy_label or sim.interface.policy.title()
 
     # ── Figure setup ─────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(14, 9))
     fig.patch.set_facecolor("#1a1a2e")
 
-    # Initial temperature slice
     wall_slice = env.walls[:, :, z].T
     T_slice = world.T[:, :, z].T
     masked_T = np.ma.array(T_slice, mask=wall_slice)
 
-    # Heatmap
     im = ax.imshow(
         masked_T, cmap="RdYlBu_r", origin="lower",
         extent=(-0.5, env.nx - 0.5, -0.5, env.ny - 0.5),
         vmin=18.0, vmax=24.0, interpolation="bilinear",
     )
-    cbar = plt.colorbar(im, ax=ax, label="Temperature (°C)", shrink=0.8, pad=0.02)
+    cbar = plt.colorbar(im, ax=ax, label="Temperature (\u00b0C)", shrink=0.8, pad=0.02)
     cbar.ax.yaxis.label.set_color("white")
     cbar.ax.tick_params(colors="white")
 
-    # Draw walls as dark overlay
+    # Wall overlay
     wall_overlay = np.ma.array(np.ones_like(wall_slice, dtype=float), mask=~wall_slice)
     ax.imshow(
         wall_overlay, cmap="Greys", origin="lower",
@@ -85,9 +87,9 @@ def main() -> None:
         alpha=0.9, vmin=0, vmax=1,
     )
 
-    # Draw room outlines and labels
+    # Room outlines and labels
     for room_name, room in env.rooms.items():
-        sx, sy, sz = room.slices
+        sx, sy, _ = room.slices
         rect = mpatches.FancyBboxPatch(
             (sx.start - 0.5, sy.start - 0.5),
             sx.stop - sx.start, sy.stop - sy.start,
@@ -97,62 +99,56 @@ def main() -> None:
         ax.add_patch(rect)
         cx = (sx.start + sx.stop) / 2
         cy = (sy.start + sy.stop) / 2
-        label = room_name.replace("_", " ").title()
-        ax.text(cx, cy, label, color="white", fontsize=8, fontweight="bold",
-                ha="center", va="center",
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.6))
+        ax.text(
+            cx, cy, room_name.replace("_", " ").title(),
+            color="white", fontsize=8, fontweight="bold", ha="center", va="center",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.6),
+        )
 
-    # Mark heat sources (use room center for zone-level sources)
-    heat_positions = []
+    # Heat source markers — use stable hash for reproducible offsets
     for src in env.heat_sources:
         room = env.rooms[src.zone]
-        sx, sy, sz = room.slices
+        sx, sy, _ = room.slices
         cx = (sx.start + sx.stop) / 2
         cy = (sy.start + sy.stop) / 2
-        # Offset slightly so multiple sources in the same room don't overlap
-        offset_x = np.random.default_rng(abs(hash(src.name)) % (2**31)).uniform(-2, 2)
-        offset_y = np.random.default_rng(abs(hash(src.name) + 1) % (2**31)).uniform(-2, 2)
-        heat_positions.append((cx + offset_x, cy + offset_y, src.name))
-
-    for hx, hy, hname in heat_positions:
-        ax.plot(hx, hy, marker="^", color="orange", markersize=10,
+        seed_x = int(hashlib.md5(src.name.encode()).hexdigest()[:8], 16) & 0x7FFFFFFF
+        seed_y = int(hashlib.md5((src.name + "_y").encode()).hexdigest()[:8], 16) & 0x7FFFFFFF
+        ox = np.random.default_rng(seed_x).uniform(-2, 2)
+        oy = np.random.default_rng(seed_y).uniform(-2, 2)
+        ax.plot(cx + ox, cy + oy, marker="^", color="orange", markersize=10,
                 markeredgecolor="red", markeredgewidth=1.5, zorder=5)
 
-    # Mark VAV dampers
-    damper_texts = {}
+    # VAV damper markers and live opening labels
+    damper_texts: dict[str, plt.Text] = {}
     for dname, damper in env.dampers.items():
         dx, dy = damper.position[0], damper.position[1]
         ax.plot(dx, dy, marker="*", color="deepskyblue", markersize=14,
                 markeredgecolor="white", markeredgewidth=1, zorder=5)
         damper_texts[dname] = ax.text(
-            dx, dy - 1.5, f"{damper.opening*100:.0f}%",
+            dx, dy - 1.5, f"{damper.opening * 100:.0f}%",
             color="deepskyblue", fontsize=7, ha="center", va="top", fontweight="bold",
         )
 
-    # Room temperature readouts (top-right corner of each room)
-    room_temp_texts = {}
+    # Per-room temperature readouts
+    room_temp_texts: dict[str, plt.Text] = {}
     for room_name, room in env.rooms.items():
-        sx, sy, sz = room.slices
-        tx = sx.stop - 1.5
-        ty = sy.stop - 1.5
+        sx, sy, _ = room.slices
         room_temp_texts[room_name] = ax.text(
-            tx, ty, "", color="yellow", fontsize=8, fontweight="bold",
-            ha="right", va="top",
+            sx.stop - 1.5, sy.stop - 1.5, "", color="yellow", fontsize=8,
+            fontweight="bold", ha="right", va="top",
             bbox=dict(boxstyle="round,pad=0.15", facecolor="black", alpha=0.7),
         )
 
-    # Title
     title_text = ax.set_title("", color="white", fontsize=13, fontweight="bold", pad=10)
 
-    # Legend
     legend_elements = [
         mpatches.Patch(facecolor="orange", edgecolor="red", label="Heat Source"),
         plt.Line2D([0], [0], marker="*", color="w", label="VAV Damper",
                    markerfacecolor="deepskyblue", markersize=12, linestyle="None"),
         mpatches.Patch(edgecolor="cyan", facecolor="none", linestyle="--", label="Room Boundary"),
     ]
-    leg = ax.legend(handles=legend_elements, loc="upper left", fontsize=8,
-                    facecolor="black", edgecolor="gray", labelcolor="white")
+    ax.legend(handles=legend_elements, loc="upper left", fontsize=8,
+              facecolor="black", edgecolor="gray", labelcolor="white")
 
     ax.set_xlabel("X (meters)", color="white")
     ax.set_ylabel("Y (meters)", color="white")
@@ -161,47 +157,76 @@ def main() -> None:
     ax.set_aspect("equal")
 
     # ── Animation loop ───────────────────────────────────────────────
-    def update(frame_num):
-        # Step the simulation multiple times per visual frame
-        for _ in range(args.steps_per_frame):
+    def update(_frame):
+        for _ in range(steps_per_frame):
             sim.step()
 
-        # Update heatmap data
-        T_slice = world.T[:, :, z].T
-        masked_T = np.ma.array(T_slice, mask=wall_slice)
-        im.set_data(masked_T)
+        T_now = world.T[:, :, z].T
+        im.set_data(np.ma.array(T_now, mask=wall_slice))
 
-        # Update damper opening labels
         for dname, damper in env.dampers.items():
-            damper_texts[dname].set_text(f"{damper.opening*100:.0f}%")
+            damper_texts[dname].set_text(f"{damper.opening * 100:.0f}%")
 
-        # Update room temperature readouts
-        for room_name in env.rooms:
-            temp = world.zone_mean_temperature(room_name)
-            room_temp_texts[room_name].set_text(f"{temp:.1f}°C")
+        for rn in env.rooms:
+            room_temp_texts[rn].set_text(f"{world.zone_mean_temperature(rn):.1f}\u00b0C")
 
-        # Update title
         title_text.set_text(
-            f"Aether-Edge HVAC Simulation  |  "
-            f"Step {world.step_count}  |  "
-            f"Time {world.time:.0f}s  |  "
-            f"Overshoot {world.max_overshoot():.2f}°C"
+            f"{label}  |  Step {world.step_count}  |  "
+            f"t={world.time:.0f}s  |  Overshoot {world.max_overshoot():.2f}\u00b0C"
         )
-
         return [im, title_text] + list(damper_texts.values()) + list(room_temp_texts.values())
 
-    print(f"Rendering {args.frames} frames ({args.steps_per_frame} sim steps each)...")
     anim = animation.FuncAnimation(
-        fig, update, frames=args.frames, interval=1000 // args.fps, blit=False,
+        fig, update, frames=n_frames, interval=1000 // fps, blit=False,
     )
 
-    if args.gif:
-        print(f"Saving to {args.gif}...")
-        writer = animation.PillowWriter(fps=args.fps)
-        anim.save(args.gif, writer=writer, dpi=100)
-        print(f"Animation saved to {args.gif}")
+    if output_path is not None:
+        print(f"  Saving GIF → {output_path} ({n_frames} frames @ {fps} fps)...")
+        anim.save(str(output_path), writer=animation.PillowWriter(fps=fps), dpi=100)
+        plt.close(fig)
     else:
         plt.show()
+
+
+# ── CLI entry point ──────────────────────────────────────────────────
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Aether-Edge — 2D Heatmap Animation")
+    p.add_argument("--config", type=str, required=True)
+    p.add_argument("--policy", choices=["edge", "centralized"], default="edge")
+    p.add_argument("--frames", type=int, default=200, help="Number of animation frames")
+    p.add_argument("--steps-per-frame", type=int, default=3, help="Sim steps per frame")
+    p.add_argument("--pre-steps", type=int, default=0, help="Warm-up steps before recording")
+    p.add_argument("--z-slice", type=int, default=1, help="Z-layer to visualize")
+    p.add_argument("--gif", type=str, default=None, help="Save to GIF (display if omitted)")
+    p.add_argument("--fps", type=int, default=15, help="Frames per second")
+    p.add_argument("--seed", type=int, default=42)
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    sim = Simulation(args.config, actuator_policy=args.policy, seed=args.seed)
+    print(sim.env.summary())
+
+    if args.pre_steps > 0:
+        print(f"Warming up: {args.pre_steps} steps...")
+        for _ in range(args.pre_steps):
+            sim.step()
+
+    print(f"Rendering {args.frames} frames ({args.steps_per_frame} sim steps each)...")
+    render_heatmap_gif(
+        sim,
+        output_path=Path(args.gif) if args.gif else None,
+        n_frames=args.frames,
+        steps_per_frame=args.steps_per_frame,
+        z_slice=args.z_slice,
+        fps=args.fps,
+    )
+    if args.gif:
+        print(f"Saved to {args.gif}")
 
 
 if __name__ == "__main__":
