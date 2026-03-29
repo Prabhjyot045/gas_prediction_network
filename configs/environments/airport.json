@@ -1,0 +1,259 @@
+{
+  "grid": {
+    "nx": 60,
+    "ny": 36,
+    "nz": 3,
+    "dx": 1.0
+  },
+
+  "physics": {
+    "thermal_diffusivity": 0.025,
+    "ambient_temperature": 20.0
+  },
+
+  "rooms": [
+    {
+      "name": "gate_1",
+      "bounds": { "x_min": 1, "x_max": 20, "y_min": 1, "y_max": 18, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "gate_2",
+      "bounds": { "x_min": 1, "x_max": 20, "y_min": 18, "y_max": 35, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "gate_3",
+      "bounds": { "x_min": 20, "x_max": 40, "y_min": 1, "y_max": 18, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "gate_4",
+      "bounds": { "x_min": 20, "x_max": 40, "y_min": 18, "y_max": 35, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "gate_5",
+      "bounds": { "x_min": 40, "x_max": 59, "y_min": 1, "y_max": 18, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "gate_6",
+      "bounds": { "x_min": 40, "x_max": 59, "y_min": 18, "y_max": 35, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    }
+  ],
+
+  "hallways": [],
+
+  "vav_dampers": [
+    {
+      "name": "vav_gate_1",
+      "zone": "gate_1",
+      "position": { "x": 10, "y": 9, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_gate_2",
+      "zone": "gate_2",
+      "position": { "x": 10, "y": 27, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_gate_3",
+      "zone": "gate_3",
+      "position": { "x": 30, "y": 9, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_gate_4",
+      "zone": "gate_4",
+      "position": { "x": 30, "y": 27, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_gate_5",
+      "zone": "gate_5",
+      "position": { "x": 49, "y": 9, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_gate_6",
+      "zone": "gate_6",
+      "position": { "x": 49, "y": 27, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.1
+    }
+  ],
+
+  "heat_sources": [
+    {
+      "name": "window_solar",
+      "zone": "gate_1",
+      "rate": 0.0,
+      "occupancy_profile": [
+        { "time": 0,    "rate":  0.00 },
+        { "time": 300,  "rate":  0.00 },
+        { "time": 600,  "rate":  0.003 },
+        { "time": 1000, "rate":  0.005 },
+        { "time": 1200, "rate":  0.006 },
+        { "time": 1500, "rate":  0.009 }
+      ]
+    },
+    {
+      "name": "window_solar_gate2",
+      "zone": "gate_2",
+      "rate": 0.0,
+      "occupancy_profile": [
+        { "time": 0,    "rate":  0.0 },
+        { "time": 300,  "rate":  0.00 },
+        { "time": 600,  "rate":  0.003 },
+        { "time": 1000, "rate":  0.005 },
+        { "time": 1200, "rate":  0.006 },
+        { "time": 1500, "rate":  0.009 }
+      ]
+    },
+
+    {
+      "name": "gate_1_occupancy",
+      "zone": "gate_1",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 300,  "rate": 0.004 },
+        { "time": 700,  "rate": 0.001 },
+        { "time": 1200, "rate": 0.003 },
+        { "time": 1600, "rate": 0.001 }
+      ]
+      
+    },
+    {
+      "name": "gate_1_equipment",
+      "zone": "gate_1",
+      "rate": 0.003,
+      "schedule": { "start": 0, "end": null }
+    },
+
+    {
+      "name": "gate_2_occupancy",
+      "zone": "gate_2",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 400,  "rate": 0.005 },
+        { "time": 800,  "rate": 0.001 },
+        { "time": 1400, "rate": 0.007 },
+        { "time": 1800, "rate": 0.000 }
+      ]
+    },
+    {
+      "name": "gate_2_equipment",
+      "zone": "gate_2",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+
+    {
+      "name": "gate_3_occupancy",
+      "zone": "gate_3",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 200,  "rate": 0.000 },
+        { "time": 500,  "rate": 0.004 },
+        { "time": 850,  "rate": 0.018 },
+        { "time": 1100, "rate": 0.018 },
+        { "time": 1600, "rate": 0.021 },
+        { "time": 1900, "rate": 0.001 }
+      ]
+    },
+    {
+      "name": "gate_3_equipment",
+      "zone": "gate_3",
+      "rate": 0.003,
+      "schedule": { "start": 0, "end": null }
+    },
+
+    {
+      "name": "gate_4_occupancy",
+      "zone": "gate_4",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 100,  "rate": 0.004 },
+        { "time": 300,  "rate": 0.01 },
+        { "time": 600,  "rate": 0.022 },
+        { "time": 900,  "rate": 0.021 },
+        { "time": 1200, "rate": 0.025 },
+        { "time": 1500, "rate": 0.002 }
+      ]
+    },
+    {
+      "name": "gate_4_equipment",
+      "zone": "gate_4",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+
+    {
+      "name": "gate_5_occupancy",
+      "zone": "gate_5",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 150,  "rate": 0.019 },
+        { "time": 420,  "rate": 0.003 },
+        { "time": 750,  "rate": 0.023 },
+        { "time": 1050, "rate": 0.022 },
+        { "time": 1400, "rate": 0.020 },
+        { "time": 1750, "rate": 0.002 }
+      ]
+    },
+    {
+      "name": "gate_5_equipment",
+      "zone": "gate_5",
+      "rate": 0.003,
+      "schedule": { "start": 0, "end": null }
+    },
+
+    {
+      "name": "gate_6_occupancy",
+      "zone": "gate_6",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 500,  "rate": 0.006 },
+        { "time": 900,  "rate": 0.001 },
+        { "time": 1300, "rate": 0.004 },
+        { "time": 1700, "rate": 0.001 }
+      ]
+    },
+    {
+      "name": "gate_6_equipment",
+      "zone": "gate_6",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    }
+  ],
+
+  "cooling_plant": {
+    "Q_total": 12.0,
+    "supply_temperature": 12.0
+  },
+  
+  "sensors": {
+    "placement": "grid",
+    "spacing": 5,
+    "z_levels": [1],
+    "communication_radius": 7.0
+  },
+
+  "noise": {
+    "sensor_sigma": 0.05
+  },
+
+  "network": {
+    "polling_interval": 15.0,
+    "jitter_sigma": 2.0,
+    "compute_delay": 3.0
+  }
+}
