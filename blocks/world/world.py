@@ -1,15 +1,23 @@
 """
-World — 3D heat diffusion + advection engine for HVAC simulation.
+World — 3D heat diffusion engine for HVAC simulation.
 
-Implements the equation:
+Implements the governing equation:
 
     dT/dt = alpha * nabla^2(T) + Q_heat - Q_cool
 
 where T is temperature, alpha is thermal diffusivity, Q_heat is zone-level
-heat injection (occupancy/equipment/solar), and Q_cool is VAV damper cooling.
+heat injection (occupancy/equipment/solar loads), and Q_cool is VAV damper
+cooling applied uniformly across each damper's assigned zone.
 
-The cooling term creates a local advection-like sink at damper positions,
-pulling room temperature toward the supply temperature.
+Numerical scheme: FTCS (Forward-Time Central-Space) on a uniform 3D grid
+with Neumann (zero-flux) boundary conditions at walls and domain edges.
+Time step is set automatically by the diffusion stability criterion:
+
+    dt = safety_factor * dx^2 / (6 * alpha)     [3D FTCS limit]
+
+Cooling pulls each zone's temperature toward the supply temperature
+proportionally to damper opening, capped globally at Q_total so that the
+shared plant capacity constraint is enforced.
 """
 
 from __future__ import annotations
