@@ -1,0 +1,60 @@
+{
+  "environment": "configs/environments/big_university.json",
+  "n_steps": 2000,
+  "edge": {
+    "cumulative_comfort_violation": 79393.884,
+    "cumulative_energy": 114400.6975,
+    "max_overshoot": 2.8446,
+    "mean_aoi": 0.0,
+    "total_messages": 26651,
+    "zone_temperatures": {
+      "auditorium_north": 20.9019,
+      "auditorium_south": 20.9234,
+      "classroom_101": 21.9194,
+      "classroom_102": 21.9054,
+      "classroom_103": 21.9054,
+      "classroom_104": 21.9221,
+      "computer_lab_a": 21.6789,
+      "computer_lab_b": 22.8446,
+      "conference_room_a": 21.8597,
+      "conference_room_b": 21.8871,
+      "faculty_office_a": 21.8391,
+      "faculty_office_b": 21.911,
+      "faculty_office_c": 21.8732,
+      "library": 21.0165,
+      "study_hall": 21.8966
+    }
+  },
+  "centralized": {
+    "cumulative_comfort_violation": 106197.69,
+    "cumulative_energy": 109725.0,
+    "max_overshoot": 6.6003,
+    "mean_aoi": 19.4204,
+    "total_messages": 53688,
+    "zone_temperatures": {
+      "auditorium_north": 20.91,
+      "auditorium_south": 20.9827,
+      "classroom_101": 21.9733,
+      "classroom_102": 21.982,
+      "classroom_103": 21.9785,
+      "classroom_104": 21.8333,
+      "computer_lab_a": 26.0043,
+      "computer_lab_b": 26.6003,
+      "conference_room_a": 21.8153,
+      "conference_room_b": 21.8425,
+      "faculty_office_a": 21.7785,
+      "faculty_office_b": 21.9238,
+      "faculty_office_c": 21.804,
+      "library": 21.0395,
+      "study_hall": 21.8682
+    }
+  },
+  "comparison": {
+    "comfort_improvement_pct": 25.24,
+    "energy_savings_pct": -4.26,
+    "edge_aoi": 0.0,
+    "centralized_aoi": 19.4204,
+    "edge_messages": 26651,
+    "centralized_messages": 53688
+  }
+}

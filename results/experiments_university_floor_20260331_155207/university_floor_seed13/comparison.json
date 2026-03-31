@@ -1,0 +1,40 @@
+{
+  "environment": "configs/environments/university_floor.json",
+  "n_steps": 2000,
+  "edge": {
+    "cumulative_comfort_violation": 16.9789,
+    "cumulative_energy": 7690.1907,
+    "max_overshoot": 0.0,
+    "mean_aoi": 0.0,
+    "total_messages": 1192,
+    "zone_temperatures": {
+      "classroom_101": 21.8071,
+      "classroom_102": 21.8672,
+      "computer_lab": 19.9594,
+      "conference_room": 21.8322,
+      "faculty_office": 21.7553
+    }
+  },
+  "centralized": {
+    "cumulative_comfort_violation": 64.4501,
+    "cumulative_energy": 8100.8516,
+    "max_overshoot": 0.0,
+    "mean_aoi": 19.4609,
+    "total_messages": 5601,
+    "zone_temperatures": {
+      "classroom_101": 21.3061,
+      "classroom_102": 21.228,
+      "computer_lab": 19.5722,
+      "conference_room": 20.9826,
+      "faculty_office": 21.617
+    }
+  },
+  "comparison": {
+    "comfort_improvement_pct": 73.66,
+    "energy_savings_pct": 5.07,
+    "edge_aoi": 0.0,
+    "centralized_aoi": 19.4609,
+    "edge_messages": 1192,
+    "centralized_messages": 5601
+  }
+}

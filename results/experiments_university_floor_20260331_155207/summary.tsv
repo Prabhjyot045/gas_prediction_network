@@ -1,0 +1,6 @@
+config	seed	edge_comfort	cent_comfort	comfort_pct	edge_energy	cent_energy	energy_pct	edge_aoi	cent_aoi	edge_msgs	cent_msgs
+university_floor	42	13.6066	40.5309	66.43	7684.60	8096.37	5.09	0.00	19.36	1134	5994
+university_floor	7	16.4049	48.7880	66.38	7700.76	8108.98	5.03	0.00	19.36	1178	6008
+university_floor	13	16.9789	64.4501	73.66	7690.19	8100.85	5.07	0.00	19.46	1192	5601
+university_floor	99	13.7174	56.4703	75.71	7691.44	8100.89	5.05	0.00	19.53	1159	5849
+university_floor	2025	16.0274	44.6183	64.08	7679.22	8103.56	5.24	0.00	19.42	1189	5400

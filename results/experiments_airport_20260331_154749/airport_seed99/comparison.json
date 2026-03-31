@@ -1,0 +1,42 @@
+{
+  "environment": "configs/environments/airport.json",
+  "n_steps": 2000,
+  "edge": {
+    "cumulative_comfort_violation": 8580.1817,
+    "cumulative_energy": 22798.9641,
+    "max_overshoot": 0.4036,
+    "mean_aoi": 0.0,
+    "total_messages": 687,
+    "zone_temperatures": {
+      "gate_1": 22.4036,
+      "gate_2": 22.0189,
+      "gate_3": 21.9743,
+      "gate_4": 21.9305,
+      "gate_5": 21.9037,
+      "gate_6": 21.8874
+    }
+  },
+  "centralized": {
+    "cumulative_comfort_violation": 13143.366,
+    "cumulative_energy": 22461.6786,
+    "max_overshoot": 0.2211,
+    "mean_aoi": 19.0321,
+    "total_messages": 10951,
+    "zone_temperatures": {
+      "gate_1": 22.2211,
+      "gate_2": 22.0135,
+      "gate_3": 21.9433,
+      "gate_4": 21.8285,
+      "gate_5": 21.835,
+      "gate_6": 21.6732
+    }
+  },
+  "comparison": {
+    "comfort_improvement_pct": 34.72,
+    "energy_savings_pct": -1.5,
+    "edge_aoi": 0.0,
+    "centralized_aoi": 19.0321,
+    "edge_messages": 687,
+    "centralized_messages": 10951
+  }
+}

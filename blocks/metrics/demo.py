@@ -270,6 +270,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed",    type=int, default=42)
     p.add_argument("--z-slice", type=int, default=1)
+    p.add_argument(
+        "--output", type=str, default=None,
+        help="Override output directory from sweep config",
+    )
     return p.parse_args()
 
 
@@ -283,7 +287,7 @@ def main() -> None:
     parameters = sweep_cfg["parameters"]
     n_steps    = sweep_cfg["simulation"]["n_steps"]
     rec_every  = sweep_cfg["simulation"]["metrics_every"]
-    output_dir = Path(sweep_cfg.get("output_dir", "results/sensor_metrics"))
+    output_dir = Path(args.output) if args.output else Path(sweep_cfg.get("output_dir", "results/sensor_metrics"))
 
     print(f"\n{'='*60}")
     print(f"Sweep : {sweep_name}")
