@@ -1,0 +1,595 @@
+{
+  "grid": {
+    "nx": 200,
+    "ny": 100,
+    "nz": 3,
+    "dx": 1.0
+  },
+
+  "physics": {
+    "thermal_diffusivity": 0.02,
+    "ambient_temperature": 20.0
+  },
+
+  "rooms": [
+    {
+      "name": "auditorium_north",
+      "bounds": { "x_min": 1, "x_max": 60, "y_min": 1, "y_max": 45, "z_min": 0, "z_max": 3 },
+      "setpoint": 21.0
+    },
+    {
+      "name": "auditorium_south",
+      "bounds": { "x_min": 1, "x_max": 60, "y_min": 55, "y_max": 99, "z_min": 0, "z_max": 3 },
+      "setpoint": 21.0
+    },
+
+    {
+      "name": "classroom_101",
+      "bounds": { "x_min": 70, "x_max": 95, "y_min": 1, "y_max": 20, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "classroom_102",
+      "bounds": { "x_min": 70, "x_max": 95, "y_min": 22, "y_max": 45, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "classroom_103",
+      "bounds": { "x_min": 70, "x_max": 95, "y_min": 55, "y_max": 78, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "classroom_104",
+      "bounds": { "x_min": 70, "x_max": 95, "y_min": 80, "y_max": 99, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+
+    {
+      "name": "computer_lab_a",
+      "bounds": { "x_min": 105, "x_max": 135, "y_min": 1, "y_max": 22, "z_min": 0, "z_max": 3 },
+      "setpoint": 20.0
+    },
+    {
+      "name": "computer_lab_b",
+      "bounds": { "x_min": 105, "x_max": 135, "y_min": 78, "y_max": 99, "z_min": 0, "z_max": 3 },
+      "setpoint": 20.0
+    },
+
+    {
+      "name": "conference_room_a",
+      "bounds": { "x_min": 105, "x_max": 135, "y_min": 28, "y_max": 48, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "conference_room_b",
+      "bounds": { "x_min": 105, "x_max": 135, "y_min": 52, "y_max": 72, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+
+    {
+      "name": "faculty_office_a",
+      "bounds": { "x_min": 145, "x_max": 175, "y_min": 1, "y_max": 30, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "faculty_office_b",
+      "bounds": { "x_min": 145, "x_max": 175, "y_min": 32, "y_max": 68, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+    {
+      "name": "faculty_office_c",
+      "bounds": { "x_min": 145, "x_max": 175, "y_min": 70, "y_max": 99, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    },
+
+    {
+      "name": "library",
+      "bounds": { "x_min": 185, "x_max": 199, "y_min": 1, "y_max": 48, "z_min": 0, "z_max": 3 },
+      "setpoint": 21.0
+    },
+    {
+      "name": "study_hall",
+      "bounds": { "x_min": 185, "x_max": 199, "y_min": 52, "y_max": 99, "z_min": 0, "z_max": 3 },
+      "setpoint": 22.0
+    }
+  ],
+
+  "hallways": [
+    {
+      "name": "main_corridor_h",
+      "bounds": { "x_min": 1, "x_max": 199, "y_min": 47, "y_max": 53, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "corridor_mid",
+      "bounds": { "x_min": 62, "x_max": 68, "y_min": 1, "y_max": 99, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "corridor_east_a",
+      "bounds": { "x_min": 97, "x_max": 103, "y_min": 1, "y_max": 99, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "corridor_east_b",
+      "bounds": { "x_min": 137, "x_max": 143, "y_min": 1, "y_max": 99, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "corridor_east_c",
+      "bounds": { "x_min": 177, "x_max": 183, "y_min": 1, "y_max": 99, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_aud_north",
+      "bounds": { "x_min": 60, "x_max": 62, "y_min": 18, "y_max": 28, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_aud_south",
+      "bounds": { "x_min": 60, "x_max": 62, "y_min": 68, "y_max": 78, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_cls_101",
+      "bounds": { "x_min": 95, "x_max": 97, "y_min": 8,  "y_max": 14, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_cls_102",
+      "bounds": { "x_min": 95, "x_max": 97, "y_min": 30, "y_max": 38, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_cls_103",
+      "bounds": { "x_min": 95, "x_max": 97, "y_min": 60, "y_max": 68, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_cls_104",
+      "bounds": { "x_min": 95, "x_max": 97, "y_min": 85, "y_max": 93, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_lab_a",
+      "bounds": { "x_min": 103, "x_max": 105, "y_min": 8,  "y_max": 14, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_lab_b",
+      "bounds": { "x_min": 103, "x_max": 105, "y_min": 83, "y_max": 93, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_conf_a",
+      "bounds": { "x_min": 103, "x_max": 105, "y_min": 35, "y_max": 42, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_conf_b",
+      "bounds": { "x_min": 103, "x_max": 105, "y_min": 57, "y_max": 65, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_office_a",
+      "bounds": { "x_min": 143, "x_max": 145, "y_min": 12, "y_max": 20, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_office_b",
+      "bounds": { "x_min": 143, "x_max": 145, "y_min": 45, "y_max": 55, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_office_c",
+      "bounds": { "x_min": 143, "x_max": 145, "y_min": 78, "y_max": 88, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_library",
+      "bounds": { "x_min": 183, "x_max": 185, "y_min": 20, "y_max": 28, "z_min": 0, "z_max": 3 }
+    },
+    {
+      "name": "door_study",
+      "bounds": { "x_min": 183, "x_max": 185, "y_min": 68, "y_max": 78, "z_min": 0, "z_max": 3 }
+    }
+  ],
+
+  "vav_dampers": [
+    {
+      "name": "vav_aud_north_1",
+      "zone": "auditorium_north",
+      "position": { "x": 15, "y": 12, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_north_2",
+      "zone": "auditorium_north",
+      "position": { "x": 40, "y": 12, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_north_3",
+      "zone": "auditorium_north",
+      "position": { "x": 15, "y": 35, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_north_4",
+      "zone": "auditorium_north",
+      "position": { "x": 40, "y": 35, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+
+    {
+      "name": "vav_aud_south_1",
+      "zone": "auditorium_south",
+      "position": { "x": 15, "y": 65, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_south_2",
+      "zone": "auditorium_south",
+      "position": { "x": 40, "y": 65, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_south_3",
+      "zone": "auditorium_south",
+      "position": { "x": 15, "y": 85, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_aud_south_4",
+      "zone": "auditorium_south",
+      "position": { "x": 40, "y": 85, "z": 1 },
+      "max_flow": 4.0,
+      "initial_opening": 0.1
+    },
+
+    {
+      "name": "vav_cls_101",
+      "zone": "classroom_101",
+      "position": { "x": 82, "y": 10, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_cls_102",
+      "zone": "classroom_102",
+      "position": { "x": 82, "y": 33, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_cls_103",
+      "zone": "classroom_103",
+      "position": { "x": 82, "y": 66, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_cls_104",
+      "zone": "classroom_104",
+      "position": { "x": 82, "y": 89, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+
+    {
+      "name": "vav_lab_a",
+      "zone": "computer_lab_a",
+      "position": { "x": 120, "y": 11, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.15
+    },
+    {
+      "name": "vav_lab_b",
+      "zone": "computer_lab_b",
+      "position": { "x": 120, "y": 88, "z": 1 },
+      "max_flow": 2.0,
+      "initial_opening": 0.15
+    },
+
+    {
+      "name": "vav_conf_a",
+      "zone": "conference_room_a",
+      "position": { "x": 120, "y": 38, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_conf_b",
+      "zone": "conference_room_b",
+      "position": { "x": 120, "y": 62, "z": 1 },
+      "max_flow": 1.5,
+      "initial_opening": 0.1
+    },
+
+    {
+      "name": "vav_office_a",
+      "zone": "faculty_office_a",
+      "position": { "x": 160, "y": 15, "z": 1 },
+      "max_flow": 1.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_office_b",
+      "zone": "faculty_office_b",
+      "position": { "x": 160, "y": 50, "z": 1 },
+      "max_flow": 1.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_office_c",
+      "zone": "faculty_office_c",
+      "position": { "x": 160, "y": 84, "z": 1 },
+      "max_flow": 1.0,
+      "initial_opening": 0.1
+    },
+
+    {
+      "name": "vav_library",
+      "zone": "library",
+      "position": { "x": 192, "y": 24, "z": 1 },
+      "max_flow": 1.0,
+      "initial_opening": 0.1
+    },
+    {
+      "name": "vav_study",
+      "zone": "study_hall",
+      "position": { "x": 192, "y": 75, "z": 1 },
+      "max_flow": 1.0,
+      "initial_opening": 0.1
+    }
+  ],
+
+  "heat_sources": [
+    {
+      "name": "aud_north_equipment",
+      "zone": "auditorium_north",
+      "rate": 0.002,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "aud_north_occupancy",
+      "zone": "auditorium_north",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 200,  "rate": 0.020 },
+        { "time": 700,  "rate": 0.001 },
+        { "time": 1000, "rate": 0.018 },
+        { "time": 1600, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "aud_south_equipment",
+      "zone": "auditorium_south",
+      "rate": 0.002,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "aud_south_occupancy",
+      "zone": "auditorium_south",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 300,  "rate": 0.018 },
+        { "time": 800,  "rate": 0.001 },
+        { "time": 1200, "rate": 0.022 },
+        { "time": 1800, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "equipment_101",
+      "zone": "classroom_101",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "occupancy_101",
+      "zone": "classroom_101",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 200,  "rate": 0.015 },
+        { "time": 600,  "rate": 0.001 },
+        { "time": 900,  "rate": 0.012 },
+        { "time": 1500, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "equipment_102",
+      "zone": "classroom_102",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "occupancy_102",
+      "zone": "classroom_102",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 250,  "rate": 0.012 },
+        { "time": 800,  "rate": 0.001 },
+        { "time": 1200, "rate": 0.014 },
+        { "time": 1800, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "equipment_103",
+      "zone": "classroom_103",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "occupancy_103",
+      "zone": "classroom_103",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 350,  "rate": 0.013 },
+        { "time": 750,  "rate": 0.001 },
+        { "time": 1100, "rate": 0.011 },
+        { "time": 1700, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "equipment_104",
+      "zone": "classroom_104",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "occupancy_104",
+      "zone": "classroom_104",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 150,  "rate": 0.014 },
+        { "time": 550,  "rate": 0.001 },
+        { "time": 950,  "rate": 0.013 },
+        { "time": 1400, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "lab_a_equipment",
+      "zone": "computer_lab_a",
+      "rate": 0.008,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "lab_a_occupancy",
+      "zone": "computer_lab_a",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 150,  "rate": 0.010 },
+        { "time": 600,  "rate": 0.002 }
+      ]
+    },
+
+    {
+      "name": "lab_b_equipment",
+      "zone": "computer_lab_b",
+      "rate": 0.008,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "lab_b_occupancy",
+      "zone": "computer_lab_b",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.002 },
+        { "time": 400,  "rate": 0.010 },
+        { "time": 900,  "rate": 0.002 }
+      ]
+    },
+
+    {
+      "name": "equipment_conf_a",
+      "zone": "conference_room_a",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "meeting_conf_a",
+      "zone": "conference_room_a",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.0005 },
+        { "time": 400,  "rate": 0.012  },
+        { "time": 1000, "rate": 0.0005 }
+      ]
+    },
+
+    {
+      "name": "equipment_conf_b",
+      "zone": "conference_room_b",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "meeting_conf_b",
+      "zone": "conference_room_b",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.0005 },
+        { "time": 600,  "rate": 0.012  },
+        { "time": 1200, "rate": 0.0005 }
+      ]
+    },
+
+    {
+      "name": "office_a_occupancy",
+      "zone": "faculty_office_a",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 600,  "rate": 0.002 },
+        { "time": 3600, "rate": 0.001 }
+      ]
+    },
+    {
+      "name": "office_b_occupancy",
+      "zone": "faculty_office_b",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 800,  "rate": 0.002 },
+        { "time": 3600, "rate": 0.001 }
+      ]
+    },
+    {
+      "name": "office_c_occupancy",
+      "zone": "faculty_office_c",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 1000, "rate": 0.002 },
+        { "time": 3600, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "library_equipment",
+      "zone": "library",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "library_occupancy",
+      "zone": "library",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 300,  "rate": 0.005 },
+        { "time": 900,  "rate": 0.002 },
+        { "time": 1500, "rate": 0.006 },
+        { "time": 2000, "rate": 0.001 }
+      ]
+    },
+
+    {
+      "name": "study_equipment",
+      "zone": "study_hall",
+      "rate": 0.001,
+      "schedule": { "start": 0, "end": null }
+    },
+    {
+      "name": "study_occupancy",
+      "zone": "study_hall",
+      "occupancy_profile": [
+        { "time": 0,    "rate": 0.001 },
+        { "time": 500,  "rate": 0.007 },
+        { "time": 1100, "rate": 0.002 },
+        { "time": 1700, "rate": 0.008 },
+        { "time": 2200, "rate": 0.001 }
+      ]
+    }
+  ],
+
+  "cooling_plant": {
+    "Q_total": 50.0,
+    "supply_temperature": 12.0
+  },
+
+  "sensors": {
+    "placement": "grid",
+    "spacing": 4,
+    "z_levels": [1],
+    "communication_radius": 6.0
+  },
+
+  "noise": {
+    "sensor_sigma": 0.05
+  },
+
+  "network": {
+    "polling_interval": 15.0,
+    "jitter_sigma": 2.0,
+    "compute_delay": 3.0
+  }
+}
