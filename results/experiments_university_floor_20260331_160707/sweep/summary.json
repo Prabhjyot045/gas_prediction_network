@@ -1,0 +1,248 @@
+{
+  "gossip_rounds": {
+    "1": {
+      "edge": {
+        "cumulative_violation": 8.3739,
+        "cumulative_energy": 4575.4539,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1009
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 79.34,
+        "energy_savings_pct": 4.48
+      }
+    },
+    "2": {
+      "edge": {
+        "cumulative_violation": 9.1176,
+        "cumulative_energy": 4548.1483,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1077
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 77.5,
+        "energy_savings_pct": 5.05
+      }
+    },
+    "5": {
+      "edge": {
+        "cumulative_violation": 9.5495,
+        "cumulative_energy": 4517.5,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1081
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 76.44,
+        "energy_savings_pct": 5.69
+      }
+    },
+    "10": {
+      "edge": {
+        "cumulative_violation": 9.5495,
+        "cumulative_energy": 4517.5,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1081
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 76.44,
+        "energy_savings_pct": 5.69
+      }
+    }
+  },
+  "sensors.spacing": {
+    "2": {
+      "edge": {
+        "cumulative_violation": 0.2108,
+        "cumulative_energy": 4553.3402,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 3690
+      },
+      "centralized": {
+        "cumulative_violation": 11.1498,
+        "cumulative_energy": 4934.5056,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 17066
+      },
+      "comparison": {
+        "comfort_improvement_pct": 98.11,
+        "energy_savings_pct": 7.72
+      }
+    },
+    "3": {
+      "edge": {
+        "cumulative_violation": 2.3322,
+        "cumulative_energy": 4549.847,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1500
+      },
+      "centralized": {
+        "cumulative_violation": 24.2455,
+        "cumulative_energy": 4859.0134,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 7476
+      },
+      "comparison": {
+        "comfort_improvement_pct": 90.38,
+        "energy_savings_pct": 6.36
+      }
+    },
+    "4": {
+      "edge": {
+        "cumulative_violation": 9.1176,
+        "cumulative_energy": 4548.1483,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1077
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 77.5,
+        "energy_savings_pct": 5.05
+      }
+    },
+    "5": {
+      "edge": {
+        "cumulative_violation": 221.9721,
+        "cumulative_energy": 4507.3617,
+        "max_overshoot": 0.1489,
+        "mean_aoi": 0.0,
+        "total_messages": 351
+      },
+      "centralized": {
+        "cumulative_violation": 101.856,
+        "cumulative_energy": 4722.1268,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 2546
+      },
+      "comparison": {
+        "comfort_improvement_pct": -117.93,
+        "energy_savings_pct": 4.55
+      }
+    },
+    "6": {
+      "edge": {
+        "cumulative_violation": 129.046,
+        "cumulative_energy": 4497.4679,
+        "max_overshoot": 0.0369,
+        "mean_aoi": 0.0,
+        "total_messages": 430
+      },
+      "centralized": {
+        "cumulative_violation": 68.6018,
+        "cumulative_energy": 4704.885,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 2283
+      },
+      "comparison": {
+        "comfort_improvement_pct": -88.11,
+        "energy_savings_pct": 4.41
+      }
+    }
+  },
+  "sensors.communication_radius": {
+    "3.0": {
+      "edge": {
+        "cumulative_violation": 0.2603,
+        "cumulative_energy": 4849.7584,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 444
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 99.36,
+        "energy_savings_pct": -1.25
+      }
+    },
+    "5.0": {
+      "edge": {
+        "cumulative_violation": 9.1874,
+        "cumulative_energy": 4545.6565,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1081
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 77.33,
+        "energy_savings_pct": 5.1
+      }
+    },
+    "7.0": {
+      "edge": {
+        "cumulative_violation": 9.1176,
+        "cumulative_energy": 4548.1483,
+        "max_overshoot": 0.0,
+        "mean_aoi": 0.0,
+        "total_messages": 1077
+      },
+      "centralized": {
+        "cumulative_violation": 40.5309,
+        "cumulative_energy": 4789.9339,
+        "max_overshoot": 0.0,
+        "mean_aoi": 19.3875,
+        "total_messages": 5115
+      },
+      "comparison": {
+        "comfort_improvement_pct": 77.5,
+        "energy_savings_pct": 5.05
+      }
+    }
+  }
+}

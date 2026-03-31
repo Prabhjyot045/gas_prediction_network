@@ -302,6 +302,8 @@ def main() -> None:
     print(f"Loaded base config: {base_env}\n")
 
     # ── Steps 3 & 4: sweep each parameter independently ──────────────
+    all_results = {}
+
     for param_path, values in parameters.items():
         print(f"\n{'─'*60}")
         print(f"Parameter : {param_path}")
@@ -310,6 +312,7 @@ def main() -> None:
 
         param_results  = []
         valid_values   = []
+        all_results[param_path] = {}
 
         for val in values:
             print(f"\n  [{param_path} = {val}]")
@@ -319,22 +322,18 @@ def main() -> None:
 
             print(f"    Running benchmark ({n_steps} steps)...")
             try:
-                # 1. Check if the parameter we are sweeping is gossip_rounds
-                # If not, we'll default to 2 (or whatever you want the baseline to be)
-                current_gossip = 2
-                if param_path == "gossip_rounds":
-                    current_gossip = val
-                print(current_gossip)
+                current_gossip = val if param_path == "gossip_rounds" else 2
                 edge_sim, cent_sim, comparison = run_benchmark(
                     env_config_path=tmp_env_path,
                     n_steps=n_steps,
                     record_every=rec_every,
-                    gossip_rounds=current_gossip, # 2. Pass it in!
+                    gossip_rounds=current_gossip,
                     seed=args.seed,
                 )
 
                 param_results.append((edge_sim, cent_sim, comparison))
                 valid_values.append(val)
+                all_results[param_path][val] = (edge_sim, cent_sim, comparison)
 
                 e = comparison["edge"]
                 c = comparison["centralized"]
@@ -371,20 +370,11 @@ def main() -> None:
             z_slice      = args.z_slice,
         )
 
+    save_summary_table(all_results, output_dir)
+
     print(f"\n{'='*60}")
     print(f"Done. Plots saved to: {output_dir}/")
     print(f"{'='*60}\n")
-
-    all_results = {}  # add this before the parameter loop
-
-    for param_path, values in parameters.items():
-        all_results[param_path] = {}
-        ...
-        # inside the try block, after appending to param_results:
-        all_results[param_path][val] = (edge_sim, cent_sim, comparison)
-
-    # after the loop:
-    save_summary_table(all_results, output_dir)
 
 
 if __name__ == "__main__":
