@@ -1,31 +1,42 @@
 # Aether-Edge: Decentralized Predictive Resource Management
 
-**ECE 659 Project** — A decentralized, predictive building management system demonstrating edge-native resource allocation.
+**ECE 659 Project** — A decentralized sensor network that uses gossip-based urgency propagation and predictive time-to-impact inference to allocate contentioned shared resources without a central coordinator.
 
-## Overview
+## Core Research
 
-Aether-Edge is a general-purpose **rate-of-change monitoring and prediction network** applied to HVAC building management. Sensor nodes monitor environmental metrics (temperature, but the architecture generalizes to CO2, humidity, occupancy, etc.), detect trends via rolling buffer analysis, and predict when comfort thresholds will be breached. The key contribution is that **prediction and actuation happen at the edge** — no central coordinator is needed, and decisions are made with zero data staleness.
+**The research is about the sensor network** — its topology, communication protocol, and urgency-driven allocation algorithm. The thermal environment (HVAC building) is a demonstration vehicle for the underlying system.
 
-The "better than centralized" argument is simple: **network latency kills responsiveness**. A centralized BMS must poll sensors, transmit data, compute a decision, and push commands back — all while the environment changes. Edge nodes act on fresh local data immediately. The Age of Information (AoI) difference is the core metric.
+**What the sensor network does**:
+- Each node independently monitors its local metric (temperature, CO2, etc.) via a rolling buffer and computes `dV/dt` via least-squares slope estimation
+- From `dV/dt`, each node predicts **Time-To-Impact (TTI)**: how long until its local threshold is breached
+- Urgency (`= 1/TTI`) is gossiped through the mesh to neighbors over multiple hops — no central server involved
+- Each actuator uses the urgency landscape it has heard to allocate its share of a **contentioned shared resource** (here: fixed cooling budget `Q_total`) proportionally
 
-### Architecture: Interface + Sensor Network
+**Why gossip topology matters**: The number of gossip rounds and the communication graph structure (density, radius, connectivity) directly determine how much of the global urgency landscape each node can see when making its local allocation decision. Sparse graphs or too few rounds mean nodes allocate based on incomplete information. This is what the sensor network topology experiments quantify.
+
+**Why contention is the key experimental condition**: When `Q_total < sum(all max_flows)`, rooms must compete for cooling. This is where the gossip-based urgency allocation outperforms centralized polling — the edge policy's zero-AoI urgency signal routes the scarce resource to whichever zone is heating fastest, while the centralized policy wastes cycles on stale data.
+
+**The HVAC environment is replaceable**: Swap the interface to read CO2, humidity, or power draw — the sensor network inference and gossip layers are domain-agnostic.
+
+### Architecture: Sensor Network + Interface
 
 The system enforces a clean separation between **what interacts with the environment** and **what does inference**:
 
-**Interface Block** (`blocks/interface/`) — Environment I/O boundary
+**Sensor Network Block** (`blocks/sensor_network/`) — Core research component
+- Receives scalar `(timestamp, value)` pairs — knows nothing about temperature, HVAC, or vents
+- **Mesh topology**: Nodes placed on a configurable grid, connected by a communication graph (edges within radio range). Topology metrics: connectivity, degree distribution, clustering coefficient
+- Three inference layers:
+  1. **Sensing**: Rolling buffer + least-squares slope estimation (dV/dt) — works for any scalar metric
+  2. **Prediction**: TTI = (threshold - current) / (rate of change) → urgency = 1/TTI
+  3. **Gossip**: Multi-hop urgency propagation — each node accumulates the urgency landscape of nodes up to `gossip_rounds` hops away. Only nodes with `|dV/dt| > talk_threshold` transmit, keeping the network quiet during stable periods
+- The urgency landscape each node sees is used to proportionally allocate its share of the contentioned resource: `opening_i = urgency_i / total_known_urgency`
+
+**Interface Block** (`blocks/interface/`) — Environment I/O boundary (not the research)
 - **Input**: Reads `World.T` at sensor positions → feeds scalar `(timestamp, value)` pairs to the sensor network
 - **Output**: Reads urgency from sensor network → routes fixed airflow budget → actuates vents
 - This is the only code that touches `World.T` or damper controls
 
-**Sensor Network Block** (`blocks/sensor_network/`) — Pure domain-agnostic inference
-- Receives scalar values — knows nothing about temperature, HVAC, or vents
-- Three inference layers:
-  1. **Sensing**: Rolling buffer + least-squares slope estimation (dV/dt)
-  2. **Prediction**: TTI = (threshold - current) / (rate of change) → urgency = 1/TTI
-  3. **Communication**: Gossip protocol propagates urgency to neighbors
-- Swap the interface to read CO2 or humidity — the sensor network works identically
-
-**Vent Routing**: With fixed total airflow (`Q_total`), the interface redistributes cooling from empty/cool rooms to rooms with high urgency. Edge policy makes this decision locally (AoI=0); centralized baseline polls with network delay (AoI>0).
+**Vent Routing with contention**: With `Q_total` set below the sum of all damper `max_flow` values, the fixed airflow budget is genuinely scarce. The interface's urgency-weighted allocation (`opening_i = urgency_i / total_urgency`) routes the scarce resource to whichever zones are heating fastest. The edge policy does this with zero-AoI data; the centralized baseline uses stale data from the last poll cycle.
 
 ## Quick Start
 
@@ -36,8 +47,13 @@ conda install -n ece659 numpy pytest matplotlib networkx jsonschema pyvista -c c
 # Run all tests
 python -m pytest blocks/ -v
 
-# Run the benchmark (edge vs centralized on university building)
-python -m blocks.benchmark.demo --config configs/environments/university_floor.json
+# Run the benchmark — output saved to results/<config_name>_<timestamp>/
+python run_benchmark.py --config configs/environments/university_floor.json
+python run_benchmark.py --config configs/environments/airport.json
+python run_benchmark.py --config configs/environments/big_university.json --no-gif
+
+# Override output directory
+python run_benchmark.py --output results/my_run
 ```
 
 ## Report Section Mapping
@@ -190,7 +206,9 @@ The simulation accumulates comfort violation (time-integrated overshoot) and ene
 
 #### 5a. Experimental Setup
 
-The benchmark environment is a **university building floor** with 5 zones:
+Three environments test the sensor network under increasing scale and thermal stress. All environments set `Q_total` below the sum of damper `max_flow` values to ensure genuine resource contention.
+
+**University Floor** (primary, moderate load):
 
 | Zone | Setpoint | Peak Heat Rate | Scenario |
 |------|----------|----------------|----------|
@@ -201,10 +219,22 @@ The benchmark environment is a **university building floor** with 5 zones:
 | Faculty Office | 22°C | 0.002 (light occupancy) | Quiet work |
 
 - **Config**: [configs/environments/university_floor.json](configs/environments/university_floor.json)
-- **Grid**: 46x30x3 voxels, 1m resolution
+- **Grid**: 46x30x3 voxels — 5 rooms, 5 VAV dampers (max_flow sum = 7.5)
+- **Cooling plant**: Q_total=4.5 (60% of max — rooms must compete)
 - **Sensors**: grid spacing=4m, communication radius=6.0m
-- **Cooling plant**: Q_total=8.0, T_supply=12°C (shared budget across all 5 VAV dampers)
 - **Centralized network**: polling_interval=15s, jitter_sigma=2s, compute_delay=3s
+
+**Airport Terminal** (6-zone stress test, bursty loads):
+- **Config**: [configs/environments/airport.json](configs/environments/airport.json)
+- **Grid**: 60x36x3 voxels — 6 gate zones, 6 VAV dampers (max_flow sum = 12.0)
+- **Cooling plant**: Q_total=8.0 (67% of max — strong contention under boarding surges)
+- Peak occupancy rates 0.019–0.025 with simultaneous gate activity
+
+**Big University** (large-scale, 14 zones):
+- **Config**: [configs/environments/big_university.json](configs/environments/big_university.json)
+- **Grid**: 200x100x3 voxels — 2 auditoriums + 4 classrooms + 2 computer labs + 2 conference rooms + 3 faculty offices + library + study hall
+- **21 VAV dampers** (max_flow sum = 50.0), **Q_total=30.0** (60% of max — heavy contention when auditoriums are occupied simultaneously)
+- Peak auditorium heat rates 0.018–0.022; tests gossip network at scale (larger mesh diameter requires more rounds for full urgency propagation)
 
 #### 5b. Benchmark Execution
 
@@ -293,7 +323,9 @@ gas_prediction_network/
 │       └── experiment.py                  #   ExperimentRunner (parameter grids)
 ├── configs/
 │   ├── environments/
-│   │   ├── university_floor.json          #   Primary: 5-room university building
+│   │   ├── university_floor.json          #   Primary: 5-room university floor (contention: Q_total=4.5 vs max 7.5)
+│   │   ├── airport.json                   #   6-zone airport terminal (contention: Q_total=8.0 vs max 12.0)
+│   │   ├── big_university.json            #   Large-scale: 14 rooms, 21 dampers (contention: Q_total=30.0 vs max 50.0)
 │   │   ├── hvac_office.json               #   4-room office layout
 │   │   └── default_maze.json              #   3-room cross layout
 │   └── experiments/

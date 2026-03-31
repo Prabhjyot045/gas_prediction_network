@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -50,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--z-slice", type=int, default=1, help="Z-layer to visualize")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument(
-        "--output", type=str, default="results/benchmark",
-        help="Output directory for results",
+        "--output", type=str, default=None,
+        help="Output directory for results (default: results/<config_name>_<timestamp>)",
     )
     p.add_argument("--no-gif", action="store_true", help="Skip GIF generation")
     return p.parse_args()
@@ -120,7 +121,12 @@ def generate_comparison_chart(
 
 def main() -> None:
     args = parse_args()
-    output_dir = Path(args.output)
+    if args.output is not None:
+        output_dir = Path(args.output)
+    else:
+        config_stem = Path(args.config).stem
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path("results") / f"{config_stem}_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)

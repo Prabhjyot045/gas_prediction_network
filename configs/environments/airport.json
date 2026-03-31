@@ -236,7 +236,7 @@
   ],
 
   "cooling_plant": {
-    "Q_total": 12.0,
+    "Q_total": 8.0,
     "supply_temperature": 12.0
   },
   
